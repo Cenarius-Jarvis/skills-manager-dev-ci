@@ -382,6 +382,10 @@ mod tests {
             };
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join("SKILL.md"), format!("---\nname: {name}\n---\n")).unwrap();
+            let metadata_location = match location {
+                Some(layer) => format!("{layer}/{name}"),
+                None => name.to_string(),
+            };
             self.store
                 .upsert_skill(&crate::core::skill_store::SkillRecord {
                     id: id.to_string(),
@@ -405,7 +409,7 @@ mod tests {
                     last_check_error: None,
                 })
                 .unwrap();
-            self.write_metadata(id, location.unwrap_or_default(), name);
+            self.write_metadata(id, &metadata_location, name);
             dir
         }
 
@@ -475,7 +479,8 @@ mod tests {
         let moved = record(&env.store, "s1");
         assert!(moved.central_path.replace('/', "\\").contains("E470C\\demo")
             || moved.central_path.contains("E470C/demo"));
-        assert!(dir.join("SKILL.md").is_file(), "SKILL.md moves with the dir");
+        assert!(Path::new(&moved.central_path).join("SKILL.md").is_file());
+        assert!(!dir.join("SKILL.md").is_file(), "old location vacated");
         assert_eq!(env.metadata_path_of("s1"), "E470C/demo");
     }
 
