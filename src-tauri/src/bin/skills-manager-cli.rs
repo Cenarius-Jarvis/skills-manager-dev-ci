@@ -905,25 +905,24 @@ fn resolve_one_skill(store: &SkillStore, reference: &str) -> anyhow::Result<Stri
     }
 }
 
-fn run_layers(args: SkillsArgs, store: &SkillStore, json: bool) -> anyhow::Result<()> {
-    match args.command {
-        Some(LayerCommand::List) => {
+fn run_layers(command: LayerCommand, store: &SkillStore, json: bool) -> anyhow::Result<()> {
+    match command {
+        LayerCommand::List => {
             let layers = library_layers::list_layers(store).map_err(AppError::db)?;
             print_json(&layers, json);
         }
-        Some(LayerCommand::Create { name }) => {
+        LayerCommand::Create { name } => {
             let name = library_layers::create_layer(store, &name).map_err(AppError::db)?;
             print_json(&serde_json::json!({ "name": name, "created": true }), json);
         }
-        Some(LayerCommand::Rename { old, new }) => {
+        LayerCommand::Rename { old, new } => {
             let name = library_layers::rename_layer(store, &old, &new).map_err(AppError::db)?;
             print_json(&serde_json::json!({ "old": old, "new": name, "renamed": true }), json);
         }
-        Some(LayerCommand::Delete { name }) => {
+        LayerCommand::Delete { name } => {
             library_layers::delete_layer(store, &name).map_err(AppError::db)?;
             print_json(&serde_json::json!({ "name": name, "deleted": true }), json);
         }
-        None => anyhow::bail!("choose a layer subcommand (list/create/rename/delete)"),
     }
     Ok(())
 }
@@ -931,11 +930,7 @@ fn run_layers(args: SkillsArgs, store: &SkillStore, json: bool) -> anyhow::Resul
 fn run_skills(args: SkillsArgs, store: &SkillStore, json: bool) -> anyhow::Result<()> {
     match args.command {
         SkillsCommand::Layer { command } => {
-            return run_layers(
-                SkillsArgs { command: Some(command) },
-                store,
-                json,
-            );
+            return run_layers(command, store, json);
         }
         SkillsCommand::Move { reference, layer } => {
             let id = resolve_one_skill(store, &reference)?;
