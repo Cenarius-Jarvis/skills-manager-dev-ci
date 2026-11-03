@@ -555,7 +555,7 @@ mod tests {
         let env = TestEnv::new();
         env.seed_skill("s1", "demo", Some("E470C"));
         env.seed_skill("s2", "demo2", None);
-        env.create_layer(&env.store, "空层").unwrap();
+        create_layer(&env.store, "空层").unwrap();
 
         let layers = list_layers(&env.store).unwrap();
         let e470c = layers.iter().find(|l| l.name == "E470C").unwrap();
