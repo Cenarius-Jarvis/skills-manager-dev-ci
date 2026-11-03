@@ -533,7 +533,7 @@ mod tests {
     fn rename_refuses_existing_target_layer() {
         let env = TestEnv::new();
         env.seed_skill("s1", "demo", Some("E470C"));
-        env.create_layer(&env.store, "工作").unwrap();
+        create_layer(&env.store, "工作").unwrap();
         assert!(rename_layer(&env.store, "E470C", "工作").is_err());
         // Rollback: member still readable at the old location.
         assert_eq!(env.metadata_path_of("s1"), "E470C/demo");
