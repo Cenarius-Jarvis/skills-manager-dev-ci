@@ -157,10 +157,19 @@ impl Journal {
     /// legacy, and completed undeploy records cannot grant ownership.
     fn owned_fingerprint(&self, target: &str) -> Option<&str> {
         self.entries.iter().rev()
-            .find(|e| e.target == target && e.status == JOURNAL_COMPLETED)
+            .find(|e| e.target == target)
+            .filter(|e| e.status == JOURNAL_COMPLETED)
             .filter(|e| e.action == devices::ACTION_DEPLOY)
             .filter(|e| e.receipt.as_ref().is_some_and(|r| r.status == "success"))
             .and_then(|e| e.target_fingerprint.as_deref())
+    }
+
+    /// A started operation after the last completion has an uncertain
+    /// result, even if the old target disappeared. Never infer ownership.
+    fn target_incomplete(&self, target: &str) -> bool {
+        self.entries.iter().rev()
+            .find(|e| e.target == target)
+            .is_some_and(|e| e.status == JOURNAL_STARTED)
     }
 
     /// Instructions started but never finished — the previous run died
@@ -355,6 +364,11 @@ pub fn apply_deploy(
     }
     let target = agent_root.join(skill_name);
     let target_str = journal_target(&inst.agent_key, &target);
+    if journal.target_incomplete(&target_str) {
+        return Err(reject(REASON_CONFLICT, format!(
+            "{} has an unfinished operation; manual recovery required", target.display()
+        )));
+    }
     let existed = match std::fs::symlink_metadata(&target) {
         Ok(_) => { require_owned_target(journal, &target_str, &target)?; true }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
@@ -997,6 +1011,26 @@ mod tests {
         apply_deploy(&agent, &inst, &source, "c2", &mut journal).unwrap();
         assert_eq!(std::fs::read_to_string(&external).unwrap(), "data");
         assert_eq!(std::fs::read_to_string(target.join("assets").join("note.txt")).unwrap(), "updated");
+    }
+
+
+    #[test]
+    fn unfinished_started_invalidates_prior_success_even_when_target_is_missing() {
+        let env = TestEnv::new();
+        let agent = env.base.join("agent");
+        std::fs::create_dir_all(&agent).unwrap();
+        let source = skill_source(&env.base, "demo");
+        let inst = instruction("deploy", "demo");
+        let mut journal = env.journal();
+        let target = apply_deploy(&agent, &inst, &source, "c1", &mut journal).unwrap();
+        complete_deploy(&mut journal, &inst, "c1", &target);
+        let key = journal_target(&inst.agent_key, &target);
+        journal.append(base_entry(&inst, "c2", &key, JOURNAL_STARTED)).unwrap();
+        assert_eq!(apply_deploy(&agent, &inst, &source, "c3", &mut journal).unwrap_err().reason, REASON_CONFLICT);
+        assert_eq!(apply_undeploy(&agent, &instruction("undeploy", "demo"), "c3", &mut journal).unwrap_err().reason, REASON_CONFLICT);
+        std::fs::remove_dir_all(&target).unwrap();
+        assert_eq!(apply_deploy(&agent, &inst, &source, "c3", &mut journal).unwrap_err().reason, REASON_CONFLICT);
+        assert!(!target.exists());
     }
 
     #[test]
