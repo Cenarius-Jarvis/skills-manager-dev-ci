@@ -656,6 +656,66 @@ mod tests {
         assert!(scan_agent_skills(&agent).is_err());
     }
 
+    /// Two simulated machines exchange reports using a temporary bare Git
+    /// repository; no real device, network, agent, or deployment is involved.
+    #[test]
+    fn inventory_two_device_channel_preserves_last_good_state_on_scan_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let remote = temp.path().join("channel.git");
+        assert!(std::process::Command::new("git").args(["init", "--bare"])
+            .arg(&remote).output().unwrap().status.success());
+        let remote = remote.to_string_lossy().to_string();
+        let mk_agent = |device: &str, name: &str| {
+            let dir = temp.path().join(device);
+            std::fs::create_dir_all(dir.join(name)).unwrap();
+            std::fs::write(dir.join(name).join("SKILL.md"), b"fixture").unwrap();
+            AgentMapping { key: "codex".into(), dir }
+        };
+        let first = mk_agent("main", "shared");
+        let second = mk_agent("second", "remote-only");
+        let state = |id: &str, timestamp: i64, mapping: AgentMapping| DeviceStateReport {
+            schema: devices::DEVICE_PROTOCOL_VERSION,
+            device_id: id.into(),
+            reported_at: timestamp,
+            executing: vec![],
+            agents: collect_agent_states(&[mapping]).unwrap(),
+        };
+        devices::publish_state_report(&remote, "test-channel", &state("dev-main", 1000, first)).unwrap();
+        devices::publish_state_report(&remote, "test-channel", &state("dev-remote", 2000, second)).unwrap();
+        let snapshot = devices::fetch_channel_snapshot(&remote, "test-channel").unwrap();
+        assert!(snapshot.warnings.is_empty(), "{:?}", snapshot.warnings);
+        assert_eq!(snapshot.states.len(), 2);
+
+        let store = crate::core::skill_store::SkillStore::new(&temp.path().join("projection.db")).unwrap();
+        devices::import_snapshot(&store, &snapshot).unwrap();
+        let main = store.get_device_skill_records(Some("dev-main")).unwrap();
+        let remote_records = store.get_device_skill_records(Some("dev-remote")).unwrap();
+        assert_eq!(main.len(), 1);
+        assert_eq!(main[0].skill_name, "shared");
+        assert_eq!(remote_records.len(), 1);
+        assert_eq!(remote_records[0].skill_name, "remote-only");
+
+        // A failure on the simulated remote machine suppresses a new state,
+        // while a receipt can still travel through the same channel.
+        let inaccessible = AgentMapping { key: "codex".into(), dir: temp.path().join("missing") };
+        assert!(collect_agent_states(&[inaccessible]).is_err());
+        let receipt = DeviceReceipt {
+            schema: devices::DEVICE_PROTOCOL_VERSION,
+            instruction_id: "inst-fixture".into(), device_id: "dev-remote".into(),
+            status: "failed".into(), reason: Some("conflict".into()),
+            instruction_commit: Some("abc".into()), detail: None,
+            executor_version: None, finished_at: 2500,
+        };
+        devices::publish_executor_update(&remote, "test-channel", &[receipt], None).unwrap();
+        let refreshed = devices::fetch_channel_snapshot(&remote, "test-channel").unwrap();
+        assert_eq!(refreshed.receipts.len(), 1);
+        let old_remote = refreshed.states.iter().find(|s| s.device_id == "dev-remote").unwrap();
+        assert_eq!(old_remote.reported_at, 2000);
+        assert_eq!(old_remote.agents[0].skills[0].name, "remote-only");
+        devices::import_snapshot(&store, &refreshed).unwrap();
+        assert_eq!(store.get_device_skill_records(Some("dev-remote")).unwrap()[0].skill_name, "remote-only");
+    }
+
     fn instruction(action: &str, skill_name: &str) -> DeviceInstruction {
         DeviceInstruction {
             schema: devices::DEVICE_PROTOCOL_VERSION,
