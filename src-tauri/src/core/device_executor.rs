@@ -502,6 +502,9 @@ fn scan_agent_skills(agent_root: &Path) -> Vec<AgentSkillReport> {
 /// whole run; a concurrent run (scheduler overlap) exits immediately with
 /// `considered = 0` instead of queueing behind itself.
 pub fn run_once(config: &ExecutorConfig) -> Result<ExecutorRunReport> {
+    if config.dry_run {
+        return inspect_dry_run(config);
+    }
     let state_dir = central_repo::base_dir().join(EXECUTOR_STATE_DIR);
     std::fs::create_dir_all(&state_dir).context("failed to create executor state dir")?;
 
@@ -598,13 +601,6 @@ pub fn run_once(config: &ExecutorConfig) -> Result<ExecutorRunReport> {
                 receipts.push(receipt);
                 continue;
             }
-        }
-
-        if config.dry_run {
-            report
-                .details
-                .push(format!("dry-run: would {} {:?}", inst.action, inst.skill_name));
-            continue;
         }
 
         let outcome = (|| -> Result<PathBuf, Reject> {
@@ -714,6 +710,71 @@ pub fn run_once(config: &ExecutorConfig) -> Result<ExecutorRunReport> {
         }
     }
 
+    Ok(report)
+}
+
+
+/// Read-only preliminary preview. It does not initialize executor state, write
+/// journal entries, fetch skill sources, publish receipts or publish state.
+/// The channel snapshot uses an ephemeral Git checkout. An incomplete preview
+/// is explicitly reported as such, and a failed channel read is never empty.
+fn inspect_dry_run(config: &ExecutorConfig) -> Result<ExecutorRunReport> {
+    let journal_path = central_repo::base_dir().join(EXECUTOR_STATE_DIR).join(JOURNAL_FILE);
+    let journal = Journal::load(&journal_path)?;
+    let snapshot = devices::fetch_channel_snapshot(&config.url, &config.branch)?;
+    if snapshot.head_commit.is_empty() {
+        bail!("cannot verify channel branch; no readable channel commit");
+    }
+    let mut report = ExecutorRunReport {
+        device_id: config.device_id.clone(),
+        channel_commit: Some(snapshot.head_commit.clone()),
+        ..Default::default()
+    };
+    report.warnings = snapshot.warnings;
+    report.warnings.push("dry-run is preliminary: skill sources were not fetched and no changes or receipts were published".to_string());
+    let now = now_ts();
+    for (inst, commit) in &snapshot.instructions {
+        if inst.device_id != config.device_id { continue; }
+        if report.considered >= config.max_instructions {
+            report.details.push(format!("instruction {} deferred: per-run cap reached", inst.id));
+            break;
+        }
+        report.considered += 1;
+        if journal.completed(&inst.id, commit).is_some() {
+            report.skipped += 1;
+            report.details.push(format!("{}: already completed", inst.id));
+            continue;
+        }
+        let agent = config.agents.iter().find(|m| m.key == inst.agent_key);
+        let refusal = if let Err(err) = devices::validate_instruction(inst) {
+            Some(format!("invalid instruction: {err}"))
+        } else if agent.is_none() {
+            Some(format!("unknown agent: {}", inst.agent_key))
+        } else if inst.expires_at.is_some_and(|expiry| now > expiry) {
+            Some("instruction expired".to_string())
+        } else if let (Some(mapping), Some(name)) = (agent, inst.skill_name.as_deref()) {
+            let target = mapping.dir.join(name);
+            let key = journal_target(&inst.agent_key, &target);
+            if journal.target_incomplete(&key) {
+                Some("unfinished prior operation requires manual recovery".to_string())
+            } else {
+                match std::fs::symlink_metadata(&target) {
+                    Ok(_) => require_owned_target(&journal, &key, &target).err().map(|e| e.detail),
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound && inst.action == devices::ACTION_DEPLOY => None,
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => Some("target does not exist".to_string()),
+                    Err(err) => Some(format!("cannot inspect target: {err}")),
+                }
+            }
+        } else {
+            Some("missing skill name".to_string())
+        };
+        if let Some(reason) = refusal {
+            report.rejected += 1;
+            report.details.push(format!("{}: would reject: {}", inst.id, reason));
+        } else {
+            report.details.push(format!("{}: preliminary candidate to {} {:?}", inst.id, inst.action, inst.skill_name));
+        }
+    }
     Ok(report)
 }
 
@@ -1031,6 +1092,75 @@ mod tests {
         std::fs::remove_dir_all(&target).unwrap();
         assert_eq!(apply_deploy(&agent, &inst, &source, "c3", &mut journal).unwrap_err().reason, REASON_CONFLICT);
         assert!(!target.exists());
+    }
+
+
+    #[test]
+    fn dry_run_does_not_change_remote_refs_journal_agent_or_state() {
+        let env = TestEnv::new();
+        let remote = env.base.join("channel.git");
+        std::fs::create_dir_all(&remote).unwrap();
+        devices_run_git_init(&remote);
+        let url = remote.to_string_lossy().to_string();
+        let agent = env.base.join("agent");
+        skill_source(&agent, "foreign");
+
+        let mut valid = instruction("deploy", "demo");
+        valid.device_id = "dev-test".to_string();
+        valid.created_at = now_ts() - 100;
+        valid.expires_at = Some(now_ts() + 1_000);
+        let mut unknown = valid.clone();
+        unknown.id = "inst-unknown".to_string();
+        unknown.agent_key = "unknown".to_string();
+        let mut expired = valid.clone();
+        expired.id = "inst-expired".to_string();
+        expired.created_at = now_ts() - 200;
+        expired.expires_at = Some(now_ts() - 100);
+        devices::publish_instructions(&url, "devices-test", None, &[valid, unknown, expired]).unwrap();
+
+        let refs_before = std::process::Command::new("git").args(["--git-dir", &url, "show-ref"]).output().unwrap().stdout;
+        let agent_before = fingerprint_tree(&agent).unwrap();
+        let state = env.base.join(EXECUTOR_STATE_DIR);
+        let config = ExecutorConfig {
+            url: url.clone(), branch: "devices-test".to_string(), device_id: "dev-test".to_string(),
+            agents: vec![AgentMapping { key: "codex".to_string(), dir: agent.clone() }],
+            max_instructions: 10, dry_run: true,
+        };
+        assert!(!state.exists());
+        let report = run_once(&config).unwrap();
+        assert_eq!(report.considered, 3);
+        assert_eq!(report.rejected, 2);
+        assert!(!report.published);
+        assert!(!state.exists(), "dry-run must not create executor state or a lock");
+        assert_eq!(fingerprint_tree(&agent).unwrap(), agent_before);
+        let refs_after = std::process::Command::new("git").args(["--git-dir", &url, "show-ref"]).output().unwrap().stdout;
+        assert_eq!(refs_after, refs_before, "dry-run must not push a receipt or state");
+
+        std::fs::create_dir_all(&state).unwrap();
+        let mut journal = Journal::load(&state.join(JOURNAL_FILE)).unwrap();
+        let entry = base_entry(&instruction("deploy", "old"), "old-commit", "", "rejected");
+        journal.append(entry).unwrap();
+        let before = std::fs::read(state.join(JOURNAL_FILE)).unwrap();
+        let state_before = fingerprint_tree(&state).unwrap();
+        let report = run_once(&config).unwrap();
+        assert_eq!(report.considered, 3);
+        assert_eq!(std::fs::read(state.join(JOURNAL_FILE)).unwrap(), before);
+        assert_eq!(fingerprint_tree(&state).unwrap(), state_before, "existing state must be byte-for-byte unchanged");
+        assert_eq!(fingerprint_tree(&agent).unwrap(), agent_before);
+        let refs_after_second = std::process::Command::new("git").args(["--git-dir", &url, "show-ref"]).output().unwrap().stdout;
+        assert_eq!(refs_after_second, refs_before);
+    }
+
+    #[test]
+    fn dry_run_refuses_unreadable_channel_instead_of_reporting_empty() {
+        let env = TestEnv::new();
+        let config = ExecutorConfig {
+            url: env.base.join("does-not-exist.git").to_string_lossy().to_string(),
+            branch: "devices-test".to_string(), device_id: "dev-test".to_string(),
+            agents: vec![], max_instructions: 10, dry_run: true,
+        };
+        assert!(run_once(&config).is_err());
+        assert!(!env.base.join(EXECUTOR_STATE_DIR).exists());
     }
 
     #[test]
