@@ -379,3 +379,21 @@ pub async fn devices_create_instruction(
     })
     .await?
 }
+
+/// Inspect a single local agent directory without opening the store, writing
+/// agent files, publishing device state or consuming channel instructions.
+#[tauri::command]
+pub async fn devices_inspect_local(
+    agent_dir: String,
+    allowed_roots: Vec<String>,
+) -> Result<crate::core::device_inventory::Inventory, String> {
+    let path = agent_dir.trim().to_string();
+    if path.is_empty() { return Err("agent directory is required".into()); }
+    if allowed_roots.iter().any(|root| root.trim().is_empty()) {
+        return Err("allowed roots must not be empty".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let roots: Vec<std::path::PathBuf> = allowed_roots.iter().map(std::path::PathBuf::from).collect();
+        crate::core::device_inventory::inspect(std::path::Path::new(&path), &roots)
+    }).await.map_err(|_| "inventory inspection failed".to_string())
+}
