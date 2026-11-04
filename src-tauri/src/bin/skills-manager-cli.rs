@@ -3432,6 +3432,21 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn inventory_run_once_cli_accepts_repeated_explicit_roots() {
+        let parsed = Cli::try_parse_from([
+            "skills-manager-cli", "devices", "run-once", "--url", "fixture.git",
+            "--agent", "codex=agent", "--allowed-root", "library-one",
+            "--allowed-root", "library-two",
+        ]).unwrap();
+        match parsed.command {
+            Commands::Devices(DevicesArgs {
+                command: DevicesCommand::RunOnce { inventory_allowed_roots, .. }
+            }) => assert_eq!(inventory_allowed_roots, vec![PathBuf::from("library-one"), PathBuf::from("library-two")]),
+            other => panic!("unexpected command {other:?}"),
+        }
+    }
+
+    #[test]
     fn agents_add_custom_registers_the_agent_and_rejects_a_duplicate() {
         let tmp = tempdir().unwrap();
         let store = SkillStore::new(&tmp.path().join("skills.db")).unwrap();
