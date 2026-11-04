@@ -3,6 +3,7 @@ name: Frontend
 # test.yml only runs for src-tauri/**, so a change confined to the frontend
 # was otherwise first compiled by the release workflow, at tag time.
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
