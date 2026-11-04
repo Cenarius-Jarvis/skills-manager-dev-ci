@@ -1,0 +1,38 @@
+name: Inventory preview smoke test
+on:
+  push:
+    branches: [codex/device-inventory-readonly]
+    paths: ['.github/workflows/inventory-preview-smoke.yml']
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: read
+jobs:
+  smoke:
+    runs-on: windows-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: skills-inventory-readonly-preview-windows
+          run-id: 41846507167
+          github-token: ${{ github.token }}
+          path: preview
+      - name: Start preview in isolated runner
+        shell: pwsh
+        run: |
+          $exe = Join-Path $PWD 'preview/device-inventory-preview.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw 'Preview executable missing' }
+          $existingStore = Test-Path -LiteralPath (Join-Path $env:USERPROFILE '.skills-manager')
+          $proc = $null
+          try {
+            $proc = Start-Process -FilePath $exe -WindowStyle Hidden -PassThru
+            Start-Sleep -Seconds 10
+            $proc.Refresh()
+            if ($proc.HasExited) { throw "Preview exited early with code $($proc.ExitCode)" }
+            $currentStore = Test-Path -LiteralPath (Join-Path $env:USERPROFILE '.skills-manager')
+            if (-not $existingStore -and $currentStore) { throw 'Unexpected Skills Manager store created' }
+            Write-Host 'Preview process remained running; no Skills Manager store was created.'
+          } finally {
+            if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id }
+          }
