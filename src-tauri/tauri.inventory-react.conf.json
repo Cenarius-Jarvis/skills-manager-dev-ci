@@ -1,0 +1,27 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Skills Inventory Component Preview",
+  "version": "0.1.0",
+  "identifier": "dev.skillsmanager.inventorycomponentpreview",
+  "build": {
+    "frontendDist": "inventory-react-dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Skills Manager · 只读清单组件预览",
+        "width": 1000,
+        "height": 700,
+        "minWidth": 680,
+        "minHeight": 520
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": false
+  }
+}
