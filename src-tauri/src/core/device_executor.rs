@@ -242,6 +242,10 @@ fn fingerprint_tree(root: &Path) -> Result<String> {
     fn visit(path: &Path, relative: &Path, hasher: &mut Sha256) -> Result<()> {
         let meta = std::fs::symlink_metadata(path)?;
         let ty = meta.file_type();
+        #[cfg(windows)]
+        if ty.is_dir() && junction::exists(path)? {
+            bail!("refusing junction: {}", path.display());
+        }
         if ty.is_symlink() {
             bail!("refusing symbolic link: {}", path.display());
         }
@@ -892,6 +896,45 @@ mod tests {
         std::fs::write(external.join("note.txt"), "untouched").unwrap();
         std::fs::remove_dir_all(target.join("assets")).unwrap();
         std::os::unix::fs::symlink(&external, target.join("assets")).unwrap();
+        assert_eq!(apply_deploy(&agent, &inst, &source, "c2", &mut journal).unwrap_err().reason, REASON_CONFLICT);
+        assert_eq!(std::fs::read_to_string(external.join("note.txt")).unwrap(), "untouched");
+    }
+
+
+    #[test]
+    fn verified_tree_can_be_updated_then_removed() {
+        let env = TestEnv::new();
+        let agent = env.base.join("agent");
+        std::fs::create_dir_all(&agent).unwrap();
+        let source = skill_source(&env.base, "demo");
+        let inst = instruction("deploy", "demo");
+        let mut journal = env.journal();
+        let target = apply_deploy(&agent, &inst, &source, "c1", &mut journal).unwrap();
+        complete_deploy(&mut journal, &inst, "c1", &target);
+        std::fs::write(source.join("SKILL.md"), "updated").unwrap();
+        apply_deploy(&agent, &inst, &source, "c2", &mut journal).unwrap();
+        complete_deploy(&mut journal, &inst, "c2", &target);
+        assert_eq!(std::fs::read_to_string(target.join("SKILL.md")).unwrap(), "updated");
+        apply_undeploy(&agent, &instruction("undeploy", "demo"), "c3", &mut journal).unwrap();
+        assert!(!target.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn junction_inserted_in_owned_target_is_conflict() {
+        let env = TestEnv::new();
+        let agent = env.base.join("agent");
+        std::fs::create_dir_all(&agent).unwrap();
+        let source = skill_source(&env.base, "demo");
+        let inst = instruction("deploy", "demo");
+        let mut journal = env.journal();
+        let target = apply_deploy(&agent, &inst, &source, "c1", &mut journal).unwrap();
+        complete_deploy(&mut journal, &inst, "c1", &target);
+        let external = env.base.join("external");
+        std::fs::create_dir_all(&external).unwrap();
+        std::fs::write(external.join("note.txt"), "untouched").unwrap();
+        std::fs::remove_dir_all(target.join("assets")).unwrap();
+        junction::create(&external, target.join("assets")).unwrap();
         assert_eq!(apply_deploy(&agent, &inst, &source, "c2", &mut journal).unwrap_err().reason, REASON_CONFLICT);
         assert_eq!(std::fs::read_to_string(external.join("note.txt")).unwrap(), "untouched");
     }
