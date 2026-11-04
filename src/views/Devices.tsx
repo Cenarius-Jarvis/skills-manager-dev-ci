@@ -360,7 +360,7 @@ export function Devices() {
     try {
       setPage(await api.devicesGetPage());
     } catch (err) {
-      setError(String(err));
+      setError(errorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -376,7 +376,7 @@ export function Devices() {
     try {
       setPage(await api.devicesRefreshChannel());
     } catch (err) {
-      setError(String(err));
+      setError(`${t("devices.refreshFailed")} ${errorMessage(err)}`);
     } finally {
       setRefreshing(false);
     }
@@ -414,6 +414,7 @@ export function Devices() {
         <div
           className="rounded-xl border border-red-500/25 bg-red-500/10 px-4 py-3 text-[13px] text-red-600 dark:text-red-400"
           data-testid="devices-error"
+          role="alert"
         >
           {error}
         </div>
@@ -443,11 +444,31 @@ export function Devices() {
                 </span>
               </div>
 
+              <div
+                className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-[13px] text-amber-700 dark:text-amber-300"
+                data-testid="device-snapshot-notice"
+                role={page.snapshot_warnings?.length ? "alert" : "status"}
+              >
+                <p>{t("devices.cachedProjectionNotice")}</p>
+                {page.snapshot_warnings == null ? (
+                  <p className="mt-1">{t("devices.channelNotChecked")}</p>
+                ) : page.snapshot_warnings.length > 0 ? (
+                  <>
+                    <p className="mt-1 font-medium">{t("devices.channelIncomplete")}</p>
+                    <ul className="mt-1 list-inside list-disc">
+                      {page.snapshot_warnings.map((warning, index) => <li key={index}>{warning}</li>)}
+                    </ul>
+                  </>
+                ) : (
+                  <p className="mt-1">{t("devices.channelNoWarnings")}</p>
+                )}
+              </div>
+
               <AddDeviceForm onAdded={load} />
 
               {page.devices.length === 0 ? (
                 <div className="app-panel p-6 text-[13px] text-muted" data-testid="devices-empty">
-                  {t("devices.noDevices")}
+                  {t("devices.currentNoDevices")}
                 </div>
               ) : (
                 page.devices.map((device) => (
@@ -477,7 +498,7 @@ export function Devices() {
                     </div>
 
                     {device.skill_records.length === 0 ? (
-                      <p className="mt-3 text-[12px] text-muted">{t("devices.noSkillRecords")}</p>
+                      <p className="mt-3 text-[12px] text-muted">{t("devices.currentNoSkillRecords")}</p>
                     ) : (
                       <div className="mt-3 flex flex-col gap-2">
                         {Object.entries(
@@ -521,7 +542,7 @@ export function Devices() {
                 <p className="mb-3 text-[12px] text-muted">{t("devices.dataNotice")}</p>
                 {page.instructions.length === 0 ? (
                   <p className="text-[13px] text-muted" data-testid="instructions-empty">
-                    {t("devices.noInstructions")}
+                    {t("devices.currentNoInstructions")}
                   </p>
                 ) : (
                   <ul className="flex flex-col gap-2" data-testid="instructions-list">
