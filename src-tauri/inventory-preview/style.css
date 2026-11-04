@@ -1,0 +1,26 @@
+* { box-sizing: border-box; }
+:root { font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; color: #eef0f5; background: #101116; }
+body { margin: 0; }
+main { max-width: 940px; margin: 0 auto; padding: 36px 28px 48px; }
+.eyebrow { color: #54d4ae; font-size: 12px; font-weight: 700; letter-spacing: .1em; }
+h1 { font-size: 27px; margin: 8px 0 10px; }
+h2 { font-size: 17px; margin: 0 0 20px; }
+.sub,.hint { color: #b2b8c6; line-height: 1.55; }
+.sub { margin-bottom: 24px; }
+.card { background: #1a1c24; border: 1px solid #363947; border-radius: 12px; padding: 22px; margin-top: 16px; }
+form { display: flex; flex-direction: column; }
+label { font-weight: 600; margin-bottom: 8px; }
+label span { color: #aeb7c8; font-size: 12px; font-weight: normal; }
+input { width: 100%; min-height: 44px; padding: 10px 12px; color: #f4f6fa; background: #101116; border: 1px solid #676e80; border-radius: 7px; font: inherit; }
+input:focus-visible,button:focus-visible { outline: 3px solid #8ceacf; outline-offset: 2px; }
+.hint { margin: 6px 0 18px; font-size: 13px; }
+button { align-self: start; min-height: 44px; padding: 0 20px; border: 0; border-radius: 7px; font: inherit; font-weight: 700; color: #08271f; background: #62dfb7; cursor: pointer; }
+button:disabled { opacity: .6; cursor: wait; }
+.result-header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.badge { color: #9de9d0; font-size: 13px; }
+#status { color: #d0d5df; }
+#warnings { color: #ffd18b; white-space: pre-wrap; line-height: 1.5; }
+ul { list-style: none; padding: 0; margin: 0; }
+li { display: flex; justify-content: space-between; gap: 12px; border-top: 1px solid #363947; padding: 12px 0; overflow-wrap: anywhere; }
+li span { color: #b2b8c6; flex-shrink: 0; font-size: 13px; }
+@media (max-width: 700px) { main { padding: 22px 16px; } .card { padding: 17px; } }
