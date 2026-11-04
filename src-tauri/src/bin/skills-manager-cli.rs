@@ -799,6 +799,10 @@ enum DevicesCommand {
         /// Agent allow-list and target directory, repeatable: --agent key=dir.
         #[arg(long = "agent")]
         agents: Vec<String>,
+        /// Approved roots for linked inventory directories; repeat as needed.
+        /// Applies only to read-only reporting, never to deployment authority.
+        #[arg(long = "allowed-root")]
+        inventory_allowed_roots: Vec<PathBuf>,
         /// Maximum instructions considered per run.
         #[arg(long, default_value_t = 10)]
         max_instructions: usize,
@@ -834,6 +838,7 @@ fn run_devices(args: DevicesArgs, store: &SkillStore, json: bool) -> anyhow::Res
             branch,
             device_id,
             agents,
+            inventory_allowed_roots,
             max_instructions,
             dry_run,
         } => {
@@ -856,6 +861,7 @@ fn run_devices(args: DevicesArgs, store: &SkillStore, json: bool) -> anyhow::Res
                     None => devices::local_device_id(store)?,
                 },
                 agents: mappings,
+                inventory_allowed_roots,
                 max_instructions,
                 dry_run,
             };
