@@ -1003,3 +1003,13 @@ export const devicesCreateInstruction = (args: {
   agentKey: string;
   ttlSecs?: number;
 }) => invoke<DeviceInstructionRow>("devices_create_instruction", args);
+
+
+/** Local-only read-only inventory; does not operate on remote devices. */
+export interface LocalInventory {
+  skills: { name: string; symlink: boolean }[];
+  warnings: string[];
+  complete: boolean;
+}
+export const devicesInspectLocal = (agentDir: string, allowedRoots: string[]) =>
+  invoke<LocalInventory>("devices_inspect_local", { agentDir, allowedRoots });
