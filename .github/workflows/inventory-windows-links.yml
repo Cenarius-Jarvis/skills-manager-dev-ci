@@ -1,0 +1,20 @@
+name: Windows inventory link checks
+on:
+  push:
+    branches: [codex/windows-inventory-links]
+    paths: ['.github/workflows/inventory-windows-links.yml', 'src-tauri/src/core/device_inventory.rs']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: src-tauri
+      - name: Verify real Windows junctions with isolated temporary fixtures
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib device_inventory -- --nocapture
