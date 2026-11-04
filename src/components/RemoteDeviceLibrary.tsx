@@ -3,7 +3,7 @@ import { Loader2, RefreshCw, Monitor } from "lucide-react";
 import { cn } from "../utils";
 import { useNavigate } from "react-router-dom";
 import type { DeviceInstructionRow, DeviceWithStatus } from "../lib/tauri";
-import { StateBadge } from "./Devices";
+import { StateBadge } from "../views/Devices";
 
 function formatTimestamp(ts: number | null, locale: string): string {
   if (!ts) return "";
