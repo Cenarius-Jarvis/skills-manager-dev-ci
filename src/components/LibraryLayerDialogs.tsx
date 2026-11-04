@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { Check, FolderPlus, Pencil, Plus, Trash2, X } from "lucide-react";
+import { cn } from "../utils";
 import * as api from "../lib/tauri";
 import type { LibraryLayer, ManagedSkill } from "../lib/tauri";
 
