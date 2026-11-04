@@ -353,35 +353,49 @@ fn make_receipt(
     }
 }
 
-fn scan_agent_skills(agent_root: &Path) -> Vec<AgentSkillReport> {
+/// A scan must be complete before it may replace the last published report.
+/// Refusing an uninspectable entry is conservative: treating it as absent
+/// would make a remote device appear to have lost deployed skills.
+fn scan_agent_skills(agent_root: &Path) -> Result<Vec<AgentSkillReport>> {
     let mut reports = Vec::new();
-    let Ok(entries) = std::fs::read_dir(agent_root) else {
-        return reports;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() || path.is_symlink() {
-            continue;
+    let entries = std::fs::read_dir(agent_root).context("agent directory is unavailable")?;
+    for entry in entries {
+        let entry = entry.context("agent entry is unavailable")?;
+        let name = entry.file_name().into_string().map_err(|_| anyhow::anyhow!("agent entry name is not UTF-8"))?;
+        let ty = entry.file_type().context("agent entry type is unavailable")?;
+        // Existing versions silently omitted linked skill directories. Until
+        // an explicit trusted-root policy is configured, keep the old report
+        // instead of publishing a confidently wrong inventory.
+        if ty.is_symlink() {
+            bail!("agent entry {name:?} is a symbolic link; inventory incomplete");
         }
-        let skill_md = path.join("SKILL.md");
-        if !skill_md.is_file() {
-            continue;
+        if !ty.is_dir() { continue; }
+        let skill_md = entry.path().join("SKILL.md");
+        let meta = match std::fs::symlink_metadata(&skill_md) {
+            Ok(meta) => meta,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => return Err(err).context("SKILL.md cannot be inspected"),
+        };
+        if meta.file_type().is_symlink() {
+            bail!("agent entry {name:?} has a linked SKILL.md; inventory incomplete");
         }
-        let content_hash = hash_file(&skill_md).ok();
-        let deployed_at = entry
-            .metadata()
-            .and_then(|m| m.modified())
-            .ok()
+        if !meta.file_type().is_file() { continue; }
+        let content_hash = Some(hash_file(&skill_md).context("SKILL.md cannot be hashed")?);
+        let deployed_at = entry.metadata().and_then(|m| m.modified()).ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64);
-        reports.push(AgentSkillReport {
-            name: entry.file_name().to_string_lossy().to_string(),
-            content_hash,
-            deployed_at,
-        });
+        reports.push(AgentSkillReport { name, content_hash, deployed_at });
     }
     reports.sort_by(|a, b| a.name.cmp(&b.name));
-    reports
+    Ok(reports)
+}
+
+fn collect_agent_states(mappings: &[AgentMapping]) -> Result<Vec<AgentStateReport>> {
+    mappings.iter().map(|mapping| {
+        let skills = scan_agent_skills(&mapping.dir)
+            .with_context(|| format!("agent {:?} inventory incomplete", mapping.key))?;
+        Ok(AgentStateReport { key: mapping.key.clone(), skills })
+    }).collect()
 }
 
 /// Runs one executor cycle. On entry, an exclusive lock is taken for the
@@ -556,24 +570,25 @@ pub fn run_once(config: &ExecutorConfig) -> Result<ExecutorRunReport> {
     // State report: what this executor manages right now. Started-but-not-
     // finished instructions (a crashed previous run) are reported as
     // executing so the UI does not quietly forget them.
-    let agents = config
-        .agents
-        .iter()
-        .map(|m| AgentStateReport {
-            key: m.key.clone(),
-            skills: scan_agent_skills(&m.dir),
-        })
-        .collect();
-    let state = DeviceStateReport {
-        schema: devices::DEVICE_PROTOCOL_VERSION,
-        device_id: config.device_id.clone(),
-        reported_at: now,
-        executing: journal.unfinished_ids(),
-        agents,
+    // Incomplete scans must never replace a prior good report with a partial
+    // or empty inventory. Receipts are still delivered; the previous report's
+    // timestamp stays unchanged and will age out in the device UI.
+    let state = match collect_agent_states(&config.agents) {
+        Ok(agents) => Some(DeviceStateReport {
+            schema: devices::DEVICE_PROTOCOL_VERSION,
+            device_id: config.device_id.clone(),
+            reported_at: now,
+            executing: journal.unfinished_ids(),
+            agents,
+        }),
+        Err(err) => {
+            report.warnings.push(format!("State report not published: {err:#}"));
+            None
+        }
     };
 
     for attempt in 0..3 {
-        match devices::publish_executor_update(&config.url, &config.branch, &receipts, Some(&state))
+        match devices::publish_executor_update(&config.url, &config.branch, &receipts, state.as_ref())
         {
             Ok(_) => {
                 report.published = true;
@@ -610,6 +625,36 @@ fn append_with_receipt(
 mod tests {
     use super::*;
     use crate::core::central_repo;
+
+    #[test]
+    fn inventory_requires_all_configured_agent_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let good = temp.path().join("good");
+        std::fs::create_dir_all(good.join("skill")).unwrap();
+        std::fs::write(good.join("skill").join("SKILL.md"), b"example").unwrap();
+        std::fs::create_dir_all(good.join("not-a-skill")).unwrap();
+        let mappings = vec![
+            AgentMapping { key: "codex".into(), dir: good },
+            AgentMapping { key: "other".into(), dir: temp.path().join("missing") },
+        ];
+        let one = collect_agent_states(&mappings[..1]).unwrap();
+        assert_eq!(one[0].skills.len(), 1);
+        assert_eq!(one[0].skills[0].name, "skill");
+        assert!(collect_agent_states(&mappings).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inventory_refuses_linked_entries_instead_of_silently_omitting_them() {
+        let temp = tempfile::tempdir().unwrap();
+        let agent = temp.path().join("agent");
+        let skill = temp.path().join("skill");
+        std::fs::create_dir_all(&agent).unwrap();
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(skill.join("SKILL.md"), b"example").unwrap();
+        std::os::unix::fs::symlink(&skill, agent.join("linked")).unwrap();
+        assert!(scan_agent_skills(&agent).is_err());
+    }
 
     fn instruction(action: &str, skill_name: &str) -> DeviceInstruction {
         DeviceInstruction {
