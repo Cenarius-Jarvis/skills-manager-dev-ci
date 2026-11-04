@@ -1126,6 +1126,7 @@ pub fn run() {
             commands::agent_workspace::update_global_local_skill_from_center,
             commands::agent_workspace::delete_global_local_skill,
             // Devices
+            commands::devices::devices_inspect_local,
             commands::devices::devices_get_page,
             commands::devices::devices_refresh_channel,
             commands::devices::devices_set_channel_config,
