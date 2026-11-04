@@ -393,7 +393,7 @@ pub async fn devices_inspect_local(
         return Err("allowed roots must not be empty".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
-        let roots: Vec<std::path::PathBuf> = allowed_roots.iter().map(std::path::PathBuf::from).collect();
+        let roots: Vec<std::path::PathBuf> = allowed_roots.iter().map(|root| std::path::PathBuf::from(root.as_str())).collect();
         crate::core::device_inventory::inspect(std::path::Path::new(&path), &roots)
     }).await.map_err(|_| "inventory inspection failed".to_string())
 }
