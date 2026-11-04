@@ -1,0 +1,43 @@
+name: Inventory preview test build
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/device-inventory-readonly]
+    paths:
+      - 'src-tauri/src/core/device_inventory.rs'
+      - 'src-tauri/src/bin/device-inventory-preview.rs'
+      - 'src-tauri/inventory-preview/**'
+      - 'src-tauri/tauri.inventory.conf.json'
+      - '.github/workflows/inventory-preview-build.yml'
+concurrency:
+  group: inventory-preview-test
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  preview:
+    runs-on: windows-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: src-tauri
+      - name: Run read-only inventory tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib device_inventory
+      - name: Build standalone preview (no installer)
+        run: cargo build --manifest-path src-tauri/Cargo.toml --release --bin device-inventory-preview
+      - name: Check executable was produced
+        shell: pwsh
+        run: |
+          $exe = 'src-tauri/target/release/device-inventory-preview.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw 'Preview executable is missing' }
+          Get-FileHash -Algorithm SHA256 -LiteralPath $exe
+      - name: Upload standalone preview
+        uses: actions/upload-artifact@v4
+        with:
+          name: skills-inventory-readonly-preview-windows
+          path: src-tauri/target/release/device-inventory-preview.exe
+          if-no-files-found: error
+          retention-days: 14
