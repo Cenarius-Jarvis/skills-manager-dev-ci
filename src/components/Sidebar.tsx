@@ -22,6 +22,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { cn } from "../utils";
 import { useApp } from "../context/AppContext";
+import { DeviceSwitcher } from "./DeviceSwitcher";
 import { CreatePresetDialog } from "./CreatePresetDialog";
 import { RenamePresetDialog } from "./RenamePresetDialog";
 import { AddProjectDialog } from "./AddProjectDialog";
@@ -394,6 +395,8 @@ export function Sidebar() {
             {t("app.name")}
           </span>
         </div>
+
+        <DeviceSwitcher />
 
         {/* Nav */}
         <div className="px-2.5 space-y-0.5 shrink-0">

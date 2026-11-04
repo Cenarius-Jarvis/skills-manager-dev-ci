@@ -275,7 +275,8 @@
     "skillNameLabel": "Nombre de la habilidad",
     "agentKeyLabel": "Agente de destino",
     "createInstruction": "Enviar",
-    "instructionCreated": "Solicitud de despliegue publicada"
+    "instructionCreated": "Solicitud de despliegue publicada",
+    "manageTitle": "Dispositivos (gestión)"
   },
   "firstRun": {
     "title": "¿Empezar de cero o restaurar desde una copia?",
@@ -547,7 +548,10 @@
       "dismiss": "Más tarde",
       "localName": "本机",
       "remoteName": "E470C"
-    }
+    },
+    "remoteTitle": "Biblioteca · {name} (dispositivo remoto)",
+    "remoteSubtitle": "Lo que este dispositivo informó sobre sus agentes — solo lectura",
+    "remoteManageLink": "Administrar dispositivos y enviar solicitudes →"
   },
   "install": {
     "all": "Histórico",
@@ -647,7 +651,8 @@
       "view": "Ver"
     },
     "trending": "En tendencia",
-    "viewOnWeb": "Ver en skills.sh"
+    "viewOnWeb": "Ver en skills.sh",
+    "remoteNotice": "Estás viendo el contexto de un dispositivo remoto — para instalar en este equipo vuelve a \"Este equipo\"."
   },
   "settings": {
     "about": "Acerca de",
@@ -1202,5 +1207,12 @@
     "skillCount": "{{count}} skills",
     "subtitle": "Skills instalados globalmente para cada agente",
     "title": "Espacio de trabajo global"
+  },
+  "deviceSwitcher": {
+    "local": "Este equipo",
+    "localHint": "Gestión y despliegue completos",
+    "remoteHint": "Dispositivo remoto",
+    "manage": "Administrar dispositivos…",
+    "remoteTag": "Remoto"
   }
 }

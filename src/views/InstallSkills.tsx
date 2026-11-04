@@ -24,6 +24,7 @@ import {
   Calendar,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { useDeviceView } from "../context/DeviceViewContext";
 import { toast } from "sonner";
 import { cn } from "../utils";
 import { useApp } from "../context/AppContext";
@@ -47,6 +48,7 @@ const SKILLS_SH_SITE_REF = /\/site\/([^/]+)\/([^/?#]+)\/?$/;
 
 export function InstallSkills() {
   const { t } = useTranslation();
+  const { view: deviceView } = useDeviceView();
   const { refreshPresets, refreshManagedSkills, managedSkills, openSkillDetailById } = useApp();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -727,6 +729,12 @@ export function InstallSkills() {
 
   return (
     <div className="app-page gap-4">
+      {deviceView !== "local" && (
+        <div className="rounded-xl border border-amber-500/25 bg-amber-500/10 px-4 py-3 text-[13px] text-amber-600 dark:text-amber-400" data-testid="install-remote-notice">
+          {t("install.remoteNotice")}
+        </div>
+      )}
+
       <div className="app-page-header border-b-0 pb-0">
         <h1 className="app-page-title mb-4">{t("install.title")}</h1>
         <div className="flex gap-1 border-b border-border-subtle">

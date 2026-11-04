@@ -39,6 +39,8 @@ import { useSkillViewMode } from "../hooks/useSkillViewMode";
 import { useMultiSelect } from "../hooks/useMultiSelect";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { LayerMoveDialog, LayerManageDialog, LayerSuggestBanner } from "../components/LibraryLayerDialogs";
+import { useDeviceView } from "../context/DeviceViewContext";
+import { RemoteDeviceLibrary, RemoteLoading } from "../components/RemoteDeviceLibrary";
 import { TagRenameDialog } from "../components/TagRenameDialog";
 import { SkillDetailPanel } from "../components/SkillDetailPanel";
 import { MultiSelectToolbar } from "../components/MultiSelectToolbar";
@@ -218,6 +220,19 @@ export function MySkills() {
   const [layerMoveSkill, setLayerMoveSkill] = useState<ManagedSkill | null>(null);
   const [layerManageOpen, setLayerManageOpen] = useState(false);
   const [layerSuggestDismissed, setLayerSuggestDismissed] = useState(false);
+  const { view: deviceView, devicesPage, refreshDevices, devicesLoading } = useDeviceView();
+  const remoteDevice =
+    deviceView !== "local"
+      ? devicesPage?.devices.find((d) => d.id === deviceView) ?? null
+      : null;
+
+  // Switching to a remote device pulls its latest report once (when the
+  // channel is configured). Manual refresh stays available on the page.
+  useEffect(() => {
+    if (deviceView !== "local" && devicesPage?.channel.configured) {
+      void refreshDevices();
+    }
+  }, [deviceView, devicesPage?.channel.configured, refreshDevices]);
 
   const [presetSkillOrder, setPresetSkillOrder] = useState<string[]>([]);
 
@@ -1235,6 +1250,19 @@ export function MySkills() {
     }
     return null;
   };
+
+  // Remote context: the library page becomes that device's report view.
+  // All local state above stays untouched — switching back restores it.
+  if (remoteDevice) {
+    return (
+      <RemoteDeviceLibrary
+        device={remoteDevice}
+        instructions={devicesPage?.instructions ?? []}
+        loading={devicesLoading}
+        onRefresh={() => void refreshDevices()}
+      />
+    );
+  }
 
   return (
     <div className="app-page">

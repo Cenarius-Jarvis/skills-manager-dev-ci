@@ -275,7 +275,8 @@
     "skillNameLabel": "Skill name",
     "agentKeyLabel": "Target agent",
     "createInstruction": "Send",
-    "instructionCreated": "Deployment request published"
+    "instructionCreated": "Deployment request published",
+    "manageTitle": "Devices (management)"
   },
   "firstRun": {
     "title": "Start fresh, or restore from a backup?",
@@ -553,7 +554,10 @@
       "dismiss": "Later",
       "localName": "本机",
       "remoteName": "E470C"
-    }
+    },
+    "remoteTitle": "Library · {name} (remote device)",
+    "remoteSubtitle": "What this device reported about its own agents — read-only",
+    "remoteManageLink": "Manage devices and send deployment requests →"
   },
   "install": {
     "title": "Install Skills",
@@ -653,7 +657,8 @@
         "pending": "Pending",
         "imported": "Imported"
       }
-    }
+    },
+    "remoteNotice": "You are viewing remote device context — installing to this machine requires switching back to \"This machine\"."
   },
   "settings": {
     "title": "Settings",
@@ -1216,5 +1221,12 @@
       "deletedLocalBatch": "{{count}} local skills deleted",
       "deleteLocalBatchFailed": "{{count}} local skills failed to delete"
     }
+  },
+  "deviceSwitcher": {
+    "local": "This machine",
+    "localHint": "Full management & deployment",
+    "remoteHint": "Remote device",
+    "manage": "Manage devices…",
+    "remoteTag": "Remote"
   }
 }

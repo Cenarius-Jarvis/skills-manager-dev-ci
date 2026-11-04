@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { Toaster } from "sonner";
 import { AppProvider } from "./context/AppContext";
+import { DeviceViewProvider } from "./context/DeviceViewContext";
 import { ThemeProvider, useThemeContext } from "./context/ThemeContext";
 import { HelpDialog } from "./components/HelpDialog";
 import { CloseActionGuard } from "./components/CloseActionGuard";
@@ -37,6 +38,7 @@ function App() {
   return (
     <ThemeProvider>
       <AppProvider>
+        <DeviceViewProvider>
         <BrowserRouter>
           <Routes>
             <Route element={<Layout />}>
@@ -57,6 +59,7 @@ function App() {
           <CloseActionGuard />
           <FirstRunRestoreDialog />
         </BrowserRouter>
+        </DeviceViewProvider>
         <ThemedToaster />
       </AppProvider>
     </ThemeProvider>

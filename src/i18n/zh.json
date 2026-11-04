@@ -275,7 +275,8 @@
     "skillNameLabel": "技能名称",
     "agentKeyLabel": "目标 Agent",
     "createInstruction": "下发",
-    "instructionCreated": "部署请求已发布"
+    "instructionCreated": "部署请求已发布",
+    "manageTitle": "设备管理"
   },
   "firstRun": {
     "title": "全新开始，还是从备份恢复？",
@@ -553,7 +554,10 @@
       "dismiss": "稍后再说",
       "localName": "本机",
       "remoteName": "E470C"
-    }
+    },
+    "remoteTitle": "技能库 · {name}（远程设备）",
+    "remoteSubtitle": "该设备自行上报的 Agent 技能——只读",
+    "remoteManageLink": "管理设备与下发部署请求 →"
   },
   "install": {
     "title": "安装 Skills",
@@ -653,7 +657,8 @@
         "pending": "待导入",
         "imported": "已导入"
       }
-    }
+    },
+    "remoteNotice": "当前查看的是远程设备上下文——安装到本机需要切换回「本机」。"
   },
   "settings": {
     "title": "设置",
@@ -1216,5 +1221,12 @@
       "deletedLocalBatch": "已删除 {{count}} 个本地 Skill",
       "deleteLocalBatchFailed": "{{count}} 个本地 Skill 删除失败"
     }
+  },
+  "deviceSwitcher": {
+    "local": "本机",
+    "localHint": "完整管理与部署",
+    "remoteHint": "远程设备",
+    "manage": "管理设备…",
+    "remoteTag": "远程"
   }
 }

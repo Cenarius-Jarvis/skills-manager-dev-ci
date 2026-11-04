@@ -74,7 +74,7 @@ function stateMeta(
   }
 }
 
-function StateBadge({ state }: { state: DeviceTaskState }) {
+export function StateBadge({ state }: { state: DeviceTaskState }) {
   const { t } = useTranslation();
   const meta = stateMeta(state, t);
   const Icon = meta.icon;
@@ -388,7 +388,7 @@ export function Devices() {
     <div className="app-page">
       <div className="app-page-header">
         <div>
-          <h1 className="app-page-title">{t("devices.title")}</h1>
+          <h1 className="app-page-title">{t("devices.manageTitle")}</h1>
           <p className="app-page-subtitle">{t("devices.subtitle")}</p>
         </div>
         <button

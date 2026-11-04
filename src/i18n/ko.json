@@ -275,7 +275,8 @@
     "skillNameLabel": "스킬 이름",
     "agentKeyLabel": "대상 에이전트",
     "createInstruction": "보내기",
-    "instructionCreated": "배포 요청이 게시되었습니다"
+    "instructionCreated": "배포 요청이 게시되었습니다",
+    "manageTitle": "기기(관리)"
   },
   "firstRun": {
     "title": "새로 시작할까요, 백업에서 복원할까요?",
@@ -547,7 +548,10 @@
       "dismiss": "나중에",
       "localName": "本机",
       "remoteName": "E470C"
-    }
+    },
+    "remoteTitle": "라이브러리 · {name} (원격 기기)",
+    "remoteSubtitle": "이 기기가 보고한 에이전트 스킬 — 읽기 전용",
+    "remoteManageLink": "기기 관리 및 배포 요청 보내기 →"
   },
   "install": {
     "title": "스킬 설치",
@@ -647,7 +651,8 @@
         "pending": "대기",
         "imported": "가져옴"
       }
-    }
+    },
+    "remoteNotice": "원격 기기 컨텍스트를 보고 있습니다 — 이 컴퓨터에 설치하려면 \"이 컴퓨터\"로 다시 전환하세요."
   },
   "settings": {
     "title": "설정",
@@ -1202,5 +1207,12 @@
       "deletedLocalBatch": "로컬 스킬 {{count}}개를 삭제했습니다",
       "deleteLocalBatchFailed": "로컬 스킬 {{count}}개를 삭제하지 못했습니다"
     }
+  },
+  "deviceSwitcher": {
+    "local": "이 컴퓨터",
+    "localHint": "전체 관리 및 배포",
+    "remoteHint": "원격 기기",
+    "manage": "기기 관리…",
+    "remoteTag": "원격"
   }
 }

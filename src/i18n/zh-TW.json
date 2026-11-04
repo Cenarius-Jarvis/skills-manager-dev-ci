@@ -275,7 +275,8 @@
     "skillNameLabel": "技能名稱",
     "agentKeyLabel": "目標 Agent",
     "createInstruction": "下發",
-    "instructionCreated": "部署請求已發布"
+    "instructionCreated": "部署請求已發布",
+    "manageTitle": "裝置管理"
   },
   "firstRun": {
     "title": "全新開始，還是從備份還原？",
@@ -547,7 +548,10 @@
       "dismiss": "稍後再說",
       "localName": "本機",
       "remoteName": "E470C"
-    }
+    },
+    "remoteTitle": "技能庫 · {name}（遠端裝置）",
+    "remoteSubtitle": "該裝置自行回報的 Agent 技能——唯讀",
+    "remoteManageLink": "管理裝置與下發部署請求 →"
   },
   "install": {
     "title": "安裝 Skills",
@@ -647,7 +651,8 @@
         "pending": "待匯入",
         "imported": "已匯入"
       }
-    }
+    },
+    "remoteNotice": "目前檢視的是遠端裝置上下文——安裝到本機需要切換回「本機」。"
   },
   "settings": {
     "title": "設定",
@@ -1208,5 +1213,12 @@
       "deletedLocalBatch": "已刪除 {{count}} 個本機 Skill",
       "deleteLocalBatchFailed": "{{count}} 個本機 Skill 刪除失敗"
     }
+  },
+  "deviceSwitcher": {
+    "local": "本機",
+    "localHint": "完整管理與部署",
+    "remoteHint": "遠端裝置",
+    "manage": "管理裝置…",
+    "remoteTag": "遠端"
   }
 }
