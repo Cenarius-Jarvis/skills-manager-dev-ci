@@ -115,14 +115,14 @@ pub fn inspect(agent_dir: &Path, allowed_roots: &[PathBuf]) -> Inventory {
         }
         let skill_file = resolved.join("SKILL.md");
         match fs::symlink_metadata(&skill_file) {
+            Ok(meta) if is_link_or_reparse(&meta) => {
+                report.complete = false;
+                report.warnings.push(format!("{name}: SKILL.md is a link and was skipped"));
+            }
             Ok(meta) if meta.file_type().is_file() => report.skills.push(InventorySkill {
                 name,
                 symlink: linked,
             }),
-            Ok(meta) if meta.file_type().is_symlink() => {
-                report.complete = false;
-                report.warnings.push(format!("{name}: SKILL.md is a link and was skipped"));
-            }
             Ok(_) => {},
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {},
             Err(_) => {
@@ -202,6 +202,16 @@ mod tests {
         assert!(result.skills[0].symlink);
         assert_eq!(result.warnings.len(), 1);
         assert_eq!(fs::read_to_string(foreign.join("SKILL.md")).unwrap(), "private");
+
+        let vanished = temp.path().join("vanished");
+        fs::create_dir_all(&vanished).unwrap();
+        junction::create(&vanished, agent.join("broken")).unwrap();
+        fs::remove_dir(&vanished).unwrap();
+        let broken = inspect(&agent, &[]);
+        assert!(!broken.complete);
+        assert!(broken.skills.is_empty());
+        assert!(broken.warnings.iter().any(|warning| warning.contains("broken")));
+
     }
 
 }
