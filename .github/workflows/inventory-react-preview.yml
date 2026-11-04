@@ -1,0 +1,55 @@
+name: Isolated React inventory preview
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/inventory-react-preview]
+    paths:
+      - 'inventory-react-preview/**'
+      - 'vite.inventory-react.config.ts'
+      - 'src-tauri/tauri.inventory-react.conf.json'
+      - 'src-tauri/src/bin/device-inventory-react-preview.rs'
+      - 'src-tauri/src/core/device_inventory.rs'
+      - 'src/components/LocalInventoryPreview*'
+      - '.github/workflows/inventory-react-preview.yml'
+concurrency:
+  group: inventory-react-preview
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  preview:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: src-tauri
+      - name: Install frontend build dependencies on runner
+        run: npm ci
+      - name: Test shared device-page inventory component
+        run: npx vitest run src/components/LocalInventoryPreview.test.tsx
+      - name: Build isolated React frontend
+        run: npx vite build --config vite.inventory-react.config.ts
+      - name: Test read-only inventory backend
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib device_inventory
+      - name: Build isolated executable
+        run: cargo build --manifest-path src-tauri/Cargo.toml --release --bin device-inventory-react-preview
+      - name: Verify executable and print SHA256
+        shell: pwsh
+        run: |
+          $exe = 'src-tauri/target/release/device-inventory-react-preview.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw 'Preview executable is missing' }
+          Get-FileHash -Algorithm SHA256 -LiteralPath $exe
+      - name: Upload isolated preview executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: skills-inventory-component-preview-windows
+          path: src-tauri/target/release/device-inventory-react-preview.exe
+          if-no-files-found: error
+          retention-days: 14
