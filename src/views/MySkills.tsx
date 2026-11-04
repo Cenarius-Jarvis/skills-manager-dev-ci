@@ -40,7 +40,7 @@ import { useMultiSelect } from "../hooks/useMultiSelect";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { LayerMoveDialog, LayerManageDialog, LayerSuggestBanner } from "../components/LibraryLayerDialogs";
 import { useDeviceView } from "../context/DeviceViewContext";
-import { RemoteDeviceLibrary, RemoteLoading } from "../components/RemoteDeviceLibrary";
+import { RemoteDeviceLibrary } from "../components/RemoteDeviceLibrary";
 import { TagRenameDialog } from "../components/TagRenameDialog";
 import { SkillDetailPanel } from "../components/SkillDetailPanel";
 import { MultiSelectToolbar } from "../components/MultiSelectToolbar";
