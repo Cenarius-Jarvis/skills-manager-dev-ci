@@ -14,6 +14,7 @@ import {
   Plus,
   Send,
 } from "lucide-react";
+import { LocalInventoryPreview } from "../components/LocalInventoryPreview";
 import * as api from "../lib/tauri";
 import type { DeviceTaskState, DeviceWithStatus } from "../lib/tauri";
 
@@ -406,6 +407,8 @@ export function Devices() {
           {t("devices.refresh")}
         </button>
       </div>
+
+      <LocalInventoryPreview />
 
       {error && (
         <div
