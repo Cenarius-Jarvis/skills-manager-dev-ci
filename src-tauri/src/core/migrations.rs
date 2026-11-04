@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 
 /// Current schema version. Bump this when adding a new migration.
-const LATEST_VERSION: u32 = 9;
+const LATEST_VERSION: u32 = 10;
 
 /// Run all pending migrations on the database.
 ///
@@ -56,6 +56,7 @@ fn migrate_step(conn: &Connection, from_version: u32) -> Result<()> {
         6 => migrate_v6_to_v7(conn),
         7 => migrate_v7_to_v8(conn),
         8 => migrate_v8_to_v9(conn),
+        9 => migrate_v9_to_v10(conn),
         _ => bail!("unknown migration version: {from_version}"),
     }
 }
@@ -338,6 +339,76 @@ fn migrate_v8_to_v9(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// v9 → v10: multi-device management (the "Devices" feature).
+///
+/// Three tables project the device control channel (a dedicated Git remote +
+/// branch, see docs/devices.md) so the UI is instant and works offline. The
+/// channel is the source of truth: every refresh rebuilds these rows from the
+/// channel files, exactly like `pending_conflicts` is rebuilt from commit
+/// trailers. Nothing here is authoritative — a stale or wiped database is
+/// repaired by the next `devices_refresh_channel`, never by the user.
+///
+/// This step also recreates the v9 stamps table when it is missing: interim
+/// unreleased builds of the devices feature stamped their databases v9 with
+/// the device tables and without the stamps cache (both features claimed v9
+/// upstream and the devices migration was renumbered here). Those databases
+/// arrive at user_version 9 with one half of the pair, and both halves are
+/// required before the next version. `IF NOT EXISTS` makes the step a no-op
+/// for databases that already have either or both.
+fn migrate_v9_to_v10(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS skill_content_stamps (
+            skill_id TEXT PRIMARY KEY REFERENCES skills(id) ON DELETE CASCADE,
+            stamp TEXT NOT NULL,
+            content_hash TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS devices (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            platform TEXT,
+            created_at INTEGER NOT NULL,
+            last_seen_at INTEGER,
+            last_state_commit TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS device_skill_records (
+            device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+            agent_key TEXT NOT NULL,
+            skill_name TEXT NOT NULL,
+            content_hash TEXT,
+            deployed_at INTEGER,
+            reported_commit TEXT,
+            PRIMARY KEY (device_id, agent_key, skill_name)
+        );
+
+        CREATE TABLE IF NOT EXISTS device_instructions (
+            id TEXT PRIMARY KEY,
+            device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+            action TEXT NOT NULL,
+            skill_url TEXT,
+            skill_branch TEXT,
+            skill_subpath TEXT,
+            skill_name TEXT,
+            agent_key TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER,
+            created_by TEXT,
+            instruction_commit TEXT,
+            receipt_commit TEXT,
+            state TEXT NOT NULL DEFAULT 'pending',
+            receipt_status TEXT,
+            receipt_reason TEXT,
+            receipt_detail TEXT,
+            receipt_at INTEGER,
+            executor_version TEXT
+        );
+        ",
+    )?;
+    Ok(())
+}
+
 // ── Helpers ──
 
 fn add_column_if_missing(
@@ -406,6 +477,117 @@ mod tests {
         assert!(tables.contains(&"skill_tags".to_string()));
         assert!(tables.contains(&"scenario_skill_tools".to_string()));
         assert!(tables.contains(&"audit_log".to_string()));
+        assert!(tables.contains(&"devices".to_string()));
+        assert!(tables.contains(&"device_skill_records".to_string()));
+        assert!(tables.contains(&"device_instructions".to_string()));
+    }
+
+    /// A database already at v8 (e.g. written by 1.43.1) must pick up the
+    /// stamps cache at v9 and the device tables at v10.
+    #[test]
+    fn test_v8_database_gains_stamps_then_device_tables() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA user_version = 8;").unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let version: u32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, LATEST_VERSION);
+        for table in [
+            "skill_content_stamps",
+            "devices",
+            "device_skill_records",
+            "device_instructions",
+        ] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(exists, "table {table} should exist after upgrade");
+        }
+    }
+
+    /// Interim unreleased builds of the devices feature stamped their
+    /// databases v9 with the device tables and WITHOUT the stamps cache
+    /// (both features claimed v9 upstream, and the devices migration was
+    /// renumbered to v10). Such a database must reach v10 with both halves
+    /// present, and an official v1.43.2 database (stamps, no devices) must
+    /// gain exactly the device half.
+    #[test]
+    fn test_v9_databases_from_either_feature_reconcile_at_v10() {
+        for (name, extra_sql) in [
+            (
+                "interim devices build",
+                "CREATE TABLE devices (id TEXT PRIMARY KEY, name TEXT NOT NULL, platform TEXT, created_at INTEGER NOT NULL, last_seen_at INTEGER, last_state_commit TEXT);",
+            ),
+            (
+                "official 1.43.2 build",
+                "CREATE TABLE skill_content_stamps (skill_id TEXT PRIMARY KEY REFERENCES skills(id) ON DELETE CASCADE, stamp TEXT NOT NULL, content_hash TEXT NOT NULL);",
+            ),
+        ] {
+            let conn = Connection::open_in_memory().unwrap();
+            conn.execute_batch(&format!(
+                "PRAGMA user_version = 9; {extra_sql}"
+            ))
+            .unwrap();
+
+            run_migrations(&conn).unwrap();
+
+            let version: u32 = conn
+                .pragma_query_value(None, "user_version", |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, LATEST_VERSION, "{name}");
+            for table in ["skill_content_stamps", "devices"] {
+                let exists: bool = conn
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                        [table],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert!(exists, "{name}: table {table} should exist after upgrade");
+            }
+        }
+    }
+
+    /// Device rows own their projections: removing a device must take its
+    /// reported skill records and instructions with it (ON DELETE CASCADE),
+    /// so a removed device cannot leave ghost entries in the UI.
+    #[test]
+    fn test_device_tables_cascade_on_device_delete() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        run_migrations(&conn).unwrap();
+
+        conn.execute_batch(
+            "
+            INSERT INTO devices (id, name, platform, created_at)
+            VALUES ('dev-1', 'Test Device', 'linux', 1000);
+            INSERT INTO device_skill_records
+                (device_id, agent_key, skill_name, content_hash, deployed_at, reported_commit)
+            VALUES ('dev-1', 'codex', 'my-skill', 'abc', 1001, 'c0ffee');
+            INSERT INTO device_instructions
+                (id, device_id, action, agent_key, created_at, state)
+            VALUES ('inst-1', 'dev-1', 'deploy', 'codex', 1002, 'pending');
+            ",
+        )
+        .unwrap();
+
+        conn.execute("DELETE FROM devices WHERE id = 'dev-1'", []).unwrap();
+
+        let skills: i64 = conn
+            .query_row("SELECT COUNT(*) FROM device_skill_records", [], |r| r.get(0))
+            .unwrap();
+        let instructions: i64 = conn
+            .query_row("SELECT COUNT(*) FROM device_instructions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(skills, 0, "skill records must cascade with their device");
+        assert_eq!(instructions, 0, "instructions must cascade with their device");
     }
 
     #[test]

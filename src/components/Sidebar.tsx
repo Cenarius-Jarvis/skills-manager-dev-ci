@@ -4,6 +4,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard,
   Layers,
+  Monitor,
   Globe,
   Download,
   CloudUpload,
@@ -170,6 +171,7 @@ export function Sidebar() {
     { name: t("sidebar.mySkills"), path: "/my-skills", icon: Layers },
     { name: t("sidebar.installSkills"), path: "/install", icon: Download },
     { name: t("sidebar.backup"), path: "/backup", icon: CloudUpload },
+    { name: t("sidebar.devices"), path: "/devices", icon: Monitor },
   ];
 
   const handleSwitchPreset = (id: string) => {

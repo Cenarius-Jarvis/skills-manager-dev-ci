@@ -5,10 +5,10 @@ use std::sync::Arc;
 use anyhow::{Context, anyhow, bail};
 use app_lib::commands::{presets as preset_cmd, skills as cmd, tools as tool_cmd};
 use app_lib::core::{
-    app_state, audit_log::AuditDraft, central_repo, error::AppError, git_backup, git_fetcher,
-    installer, library_layers, merge, repo_lock::RepoLock, scenario_service, skill_metadata,
-    skill_store::SkillStore, skillssh_api, sync_engine, sync_metadata, tool_adapters, tool_service,
-    well_known,
+    app_state, audit_log::AuditDraft, central_repo, device_executor, devices, error::AppError,
+    git_backup, git_fetcher, installer, library_layers, merge, repo_lock::RepoLock,
+    scenario_service, skill_metadata, skill_store::SkillStore, skillssh_api, sync_engine,
+    sync_metadata, tool_adapters, tool_service, well_known,
 };
 use clap::{Args, Parser, Subcommand};
 use serde::Serialize;
@@ -34,6 +34,7 @@ enum Commands {
     #[command(alias = "scenarios")]
     Presets(PresetArgs),
     Git(GitArgs),
+    Devices(DevicesArgs),
 }
 
 #[derive(Args, Debug)]
@@ -749,6 +750,117 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Skills(args) => run_skills(args, &store, cli.json),
         Commands::Presets(args) => run_presets(args, &store, cli.json),
         Commands::Git(args) => run_git(args, &store, cli.skills_root.is_some(), cli.json),
+        Commands::Devices(args) => run_devices(args, &store, cli.json),
+    }
+}
+
+// ── devices ───────────────────────────────────────────────────────────────
+
+#[derive(Args, Debug)]
+struct DevicesArgs {
+    #[command(subcommand)]
+    command: DevicesCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum DevicesCommand {
+    /// Print this machine's device identity (id, name and channel settings).
+    Whoami,
+    /// One-shot device executor: pull instructions from the control channel,
+    /// execute the ones addressed to this device, publish receipts and a
+    /// state report, then exit. Never runs as a daemon.
+    RunOnce {
+        /// Control channel remote (https://, or a local path for testing).
+        #[arg(long)]
+        url: String,
+        /// Control channel branch.
+        #[arg(long)]
+        branch: Option<String>,
+        /// This device's id on the channel; defaults to this machine's id.
+        #[arg(long)]
+        device_id: Option<String>,
+        /// Agent allow-list and target directory, repeatable: --agent key=dir.
+        #[arg(long = "agent")]
+        agents: Vec<String>,
+        /// Maximum instructions considered per run.
+        #[arg(long, default_value_t = 10)]
+        max_instructions: usize,
+        /// Show what would happen without touching anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Serialize)]
+struct DevicesWhoami {
+    device_id: String,
+    device_name: String,
+    channel_url: Option<String>,
+    channel_branch: String,
+}
+
+fn run_devices(args: DevicesArgs, store: &SkillStore, json: bool) -> anyhow::Result<()> {
+    match args.command {
+        DevicesCommand::Whoami => {
+            let report = DevicesWhoami {
+                device_id: devices::local_device_id(store)?,
+                device_name: devices::local_device_name(store),
+                channel_url: devices::channel_url(store).map(|u| devices::redact_url(&u)),
+                channel_branch: devices::channel_branch(store),
+            };
+            print_json(&report, json);
+            Ok(())
+        }
+        DevicesCommand::RunOnce {
+            url,
+            branch,
+            device_id,
+            agents,
+            max_instructions,
+            dry_run,
+        } => {
+            let mut mappings = Vec::new();
+            for spec in &agents {
+                let (key, dir) = spec.split_once('=').ok_or_else(|| {
+                    anyhow!("--agent expects key=dir, got {spec:?}")
+                })?;
+                devices::validate_agent_key(key)?;
+                mappings.push(device_executor::AgentMapping {
+                    key: key.to_string(),
+                    dir: PathBuf::from(dir),
+                });
+            }
+            let config = device_executor::ExecutorConfig {
+                url,
+                branch: branch.unwrap_or_else(|| devices::DEFAULT_CHANNEL_BRANCH.to_string()),
+                device_id: match device_id {
+                    Some(id) => id,
+                    None => devices::local_device_id(store)?,
+                },
+                agents: mappings,
+                max_instructions,
+                dry_run,
+            };
+            if config.agents.is_empty() && !config.dry_run {
+                bail!("run-once requires at least one --agent key=dir mapping (or --dry-run)");
+            }
+            let report = device_executor::run_once(&config)?;
+            let skipped_because_locked = report.skipped_because_locked;
+            let published = report.published;
+            let publish_error = report.publish_error.clone();
+            print_json(&report, json);
+            if skipped_because_locked {
+                // Benign scheduler overlap: another run is already active.
+                return Ok(());
+            }
+            if !published {
+                bail!(
+                    "executor results could not be published: {}",
+                    publish_error.unwrap_or_else(|| "unknown error".to_string())
+                );
+            }
+            Ok(())
+        }
     }
 }
 

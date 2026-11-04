@@ -1125,6 +1125,13 @@ pub fn run() {
             commands::agent_workspace::import_global_local_skill_to_center,
             commands::agent_workspace::update_global_local_skill_from_center,
             commands::agent_workspace::delete_global_local_skill,
+            // Devices
+            commands::devices::devices_get_page,
+            commands::devices::devices_refresh_channel,
+            commands::devices::devices_set_channel_config,
+            commands::devices::devices_add_device,
+            commands::devices::devices_remove_device,
+            commands::devices::devices_create_instruction,
             // Presets
             commands::presets::get_presets,
             commands::presets::get_active_preset,

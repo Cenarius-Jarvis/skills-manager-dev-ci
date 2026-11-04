@@ -13,7 +13,8 @@
     "newPreset": "Nuevo preset",
     "projects": "Espacios de trabajo de proyecto",
     "addProject": "Vincular proyecto",
-    "settings": "Ajustes"
+    "settings": "Ajustes",
+    "devices": "Dispositivos"
   },
   "help": {
     "eyebrow": "Guía",
@@ -222,6 +223,59 @@
       "title": "Resumen de la Biblioteca"
     },
     "title": "Copia de seguridad"
+  },
+  "devices": {
+    "title": "Dispositivos",
+    "subtitle": "Gestiona habilidades en tus otras máquinas",
+    "refresh": "Actualizar desde el canal",
+    "loading": "Cargando dispositivos…",
+    "notConfigured": "Aún no hay un canal de dispositivos configurado. Configúralo en esta página para gestionar otros dispositivos.",
+    "noDevices": "Ningún dispositivo ha informado todavía. Aparecerán aquí cuando su ejecutor publique un informe de estado.",
+    "thisDevice": "Este dispositivo",
+    "online": "En línea",
+    "offline": "Desconectado",
+    "lastSeen": "Último informe: {{time}}",
+    "neverReported": "Nunca ha informado",
+    "noSkillRecords": "Este dispositivo aún no ha informado de habilidades de agentes.",
+    "instructionsTitle": "Solicitudes de despliegue",
+    "dataNotice": "El éxito solo se muestra cuando el propio dispositivo informó del resultado — nunca solo porque se escribiera una solicitud.",
+    "noInstructions": "Aún no hay solicitudes de despliegue.",
+    "state": {
+      "pending": "Pendiente de sincronizar",
+      "executing": "Ejecutando",
+      "success": "Desplegada (informada)",
+      "failed": "Fallida",
+      "device_offline": "Dispositivo sin conexión",
+      "stale": "Obsoleta",
+      "expired": "Caducada"
+    },
+    "action": {
+      "deploy": "Desplegar",
+      "undeploy": "Retirar"
+    },
+    "channelTitle": "Configurar el canal de dispositivos",
+    "channelHint": "El canal es un repositorio Git privado dedicado que transporta instrucciones y recibos entre tus máquinas. Crea un repositorio privado vacío en GitHub y pega su URL aquí.",
+    "channelUrlLabel": "URL del repositorio del canal",
+    "channelBranchLabel": "Rama del canal",
+    "saveChannel": "Guardar configuración",
+    "saving": "Guardando…",
+    "channelUrlRequired": "Se requiere la URL del repositorio",
+    "channelSaved": "Canal de dispositivos configurado",
+    "deviceNameRequired": "Se requiere el nombre del dispositivo",
+    "deviceAdded": "Dispositivo añadido",
+    "deviceNameLabel": "Nombre del dispositivo",
+    "devicePlatformLabel": "Plataforma (opcional)",
+    "addDevice": "Añadir dispositivo",
+    "instructTitle": "Enviar solicitud de despliegue",
+    "instructHint": "La solicitud se publica en el canal; el estado solo pasa a “desplegada” cuando el propio dispositivo informa del resultado.",
+    "actionLabel": "Acción",
+    "skillUrlLabel": "URL del repositorio de la habilidad",
+    "skillBranchLabel": "Rama (opcional)",
+    "skillSubpathLabel": "Subruta en el repositorio",
+    "skillNameLabel": "Nombre de la habilidad",
+    "agentKeyLabel": "Agente de destino",
+    "createInstruction": "Enviar",
+    "instructionCreated": "Solicitud de despliegue publicada"
   },
   "firstRun": {
     "title": "¿Empezar de cero o restaurar desde una copia?",

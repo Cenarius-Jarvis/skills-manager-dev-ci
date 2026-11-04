@@ -1,14 +1,19 @@
 use anyhow::Result;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
 use super::audit_log::{AuditDraft, AuditEntry, MAX_ENTRIES as AUDIT_MAX_ENTRIES};
 use super::crypto;
+use super::devices::{DeviceInstructionRow, DeviceRow, DeviceSkillRecordRow};
 
 /// Settings keys whose values are encrypted at rest with AES-256-GCM.
-const SENSITIVE_KEYS: &[&str] = &["proxy_url", "git_backup_remote_url"];
+const SENSITIVE_KEYS: &[&str] = &[
+    "proxy_url",
+    "git_backup_remote_url",
+    "device_channel_url",
+];
 
 pub struct SkillStore {
     conn: Mutex<Connection>,
@@ -1428,6 +1433,313 @@ impl SkillStore {
         };
         Ok(rows)
     }
+
+    // ── Devices (multi-device channel projection; the channel is the source
+    //    of truth — these rows are rebuilt by `devices::import_snapshot`) ──
+
+    pub fn upsert_device(&self, row: &DeviceRow) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO devices (id, name, platform, created_at, last_seen_at, last_state_commit)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                platform = excluded.platform,
+                -- first import wins for creation time; freshness comes from
+                -- update_device_last_seen, not from re-imported manifests
+                created_at = CASE WHEN devices.created_at < excluded.created_at
+                                  THEN devices.created_at ELSE excluded.created_at END",
+            params![
+                row.id,
+                row.name,
+                row.platform,
+                row.created_at,
+                row.last_seen_at,
+                row.last_state_commit,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_device(&self, id: &str) -> Result<Option<DeviceRow>> {
+        let conn = self.conn.lock().unwrap();
+        let row = conn
+            .query_row(
+                "SELECT id, name, platform, created_at, last_seen_at, last_state_commit
+                 FROM devices WHERE id = ?1",
+                params![id],
+                map_device_row,
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    pub fn get_devices(&self) -> Result<Vec<DeviceRow>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, platform, created_at, last_seen_at, last_state_commit
+             FROM devices ORDER BY created_at ASC, id ASC",
+        )?;
+        let rows = stmt
+            .query_map([], map_device_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn delete_device(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM devices WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn update_device_last_seen(
+        &self,
+        device_id: &str,
+        seen_at: i64,
+        state_commit: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE devices SET last_seen_at = ?2, last_state_commit = ?3 WHERE id = ?1",
+            params![device_id, seen_at, state_commit],
+        )?;
+        Ok(())
+    }
+
+    /// Full replace of one device's reported agent skills — a state report is
+    /// a complete snapshot, so the projection mirrors it instead of merging.
+    pub fn replace_device_skill_records(
+        &self,
+        device_id: &str,
+        rows: &[DeviceSkillRecordRow],
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM device_skill_records WHERE device_id = ?1",
+            params![device_id],
+        )?;
+        for row in rows {
+            tx.execute(
+                "INSERT INTO device_skill_records
+                    (device_id, agent_key, skill_name, content_hash, deployed_at, reported_commit)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    row.device_id,
+                    row.agent_key,
+                    row.skill_name,
+                    row.content_hash,
+                    row.deployed_at,
+                    row.reported_commit,
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn get_device_skill_records(
+        &self,
+        device_id: Option<&str>,
+    ) -> Result<Vec<DeviceSkillRecordRow>> {
+        let conn = self.conn.lock().unwrap();
+        let (sql, bind): (&str, Vec<&str>) = match device_id {
+            Some(id) => (
+                "SELECT device_id, agent_key, skill_name, content_hash, deployed_at, reported_commit
+                 FROM device_skill_records WHERE device_id = ?1
+                 ORDER BY agent_key ASC, skill_name ASC",
+                vec![id],
+            ),
+            None => (
+                "SELECT device_id, agent_key, skill_name, content_hash, deployed_at, reported_commit
+                 FROM device_skill_records ORDER BY device_id ASC, agent_key ASC, skill_name ASC",
+                vec![],
+            ),
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let map_row = |row: &rusqlite::Row<'_>| -> rusqlite::Result<DeviceSkillRecordRow> {
+            Ok(DeviceSkillRecordRow {
+                device_id: row.get(0)?,
+                agent_key: row.get(1)?,
+                skill_name: row.get(2)?,
+                content_hash: row.get(3)?,
+                deployed_at: row.get(4)?,
+                reported_commit: row.get(5)?,
+            })
+        };
+        let rows = if let Some(id) = bind.first() {
+            stmt.query_map(params![id], map_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        } else {
+            stmt.query_map([], map_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        Ok(rows)
+    }
+
+    /// Instruction upsert with projection rules: the first-seen
+    /// `instruction_commit` is preserved (receipt matching is checked against
+    /// it — re-publishing must not re-validate an old receipt), and `state` is
+    /// only ever recomputed by `set_device_instruction_state`.
+    pub fn upsert_device_instruction(&self, row: &DeviceInstructionRow) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO device_instructions (
+                id, device_id, action, skill_url, skill_branch, skill_subpath, skill_name,
+                agent_key, created_at, expires_at, created_by, instruction_commit,
+                receipt_commit, state, receipt_status, receipt_reason, receipt_detail,
+                receipt_at, executor_version
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+             ON CONFLICT(id) DO UPDATE SET
+                action = excluded.action,
+                skill_url = excluded.skill_url,
+                skill_branch = excluded.skill_branch,
+                skill_subpath = excluded.skill_subpath,
+                skill_name = excluded.skill_name,
+                agent_key = excluded.agent_key,
+                created_at = excluded.created_at,
+                expires_at = excluded.expires_at,
+                created_by = excluded.created_by,
+                instruction_commit = COALESCE(device_instructions.instruction_commit, excluded.instruction_commit)",
+            params![
+                row.id,
+                row.device_id,
+                row.action,
+                row.skill_url,
+                row.skill_branch,
+                row.skill_subpath,
+                row.skill_name,
+                row.agent_key,
+                row.created_at,
+                row.expires_at,
+                row.created_by,
+                row.instruction_commit,
+                row.receipt_commit,
+                row.state,
+                row.receipt_status,
+                row.receipt_reason,
+                row.receipt_detail,
+                row.receipt_at,
+                row.executor_version,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_device_instruction(&self, id: &str) -> Result<Option<DeviceInstructionRow>> {
+        let conn = self.conn.lock().unwrap();
+        let row = conn
+            .query_row(
+                "SELECT id, device_id, action, skill_url, skill_branch, skill_subpath, skill_name,
+                        agent_key, created_at, expires_at, created_by, instruction_commit,
+                        receipt_commit, state, receipt_status, receipt_reason, receipt_detail,
+                        receipt_at, executor_version
+                 FROM device_instructions WHERE id = ?1",
+                params![id],
+                map_instruction_row,
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    pub fn get_device_instructions(&self, device_id: Option<&str>) -> Result<Vec<DeviceInstructionRow>> {
+        let conn = self.conn.lock().unwrap();
+        let (sql, bind): (&str, Vec<&str>) = match device_id {
+            Some(id) => (
+                "SELECT id, device_id, action, skill_url, skill_branch, skill_subpath, skill_name,
+                        agent_key, created_at, expires_at, created_by, instruction_commit,
+                        receipt_commit, state, receipt_status, receipt_reason, receipt_detail,
+                        receipt_at, executor_version
+                 FROM device_instructions WHERE device_id = ?1 ORDER BY created_at DESC, id DESC",
+                vec![id],
+            ),
+            None => (
+                "SELECT id, device_id, action, skill_url, skill_branch, skill_subpath, skill_name,
+                        agent_key, created_at, expires_at, created_by, instruction_commit,
+                        receipt_commit, state, receipt_status, receipt_reason, receipt_detail,
+                        receipt_at, executor_version
+                 FROM device_instructions ORDER BY created_at DESC, id DESC",
+                vec![],
+            ),
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let rows = if let Some(id) = bind.first() {
+            stmt.query_map(params![id], map_instruction_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        } else {
+            stmt.query_map([], map_instruction_row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        Ok(rows)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_device_instruction_receipt(
+        &self,
+        id: &str,
+        status: &str,
+        reason: Option<&str>,
+        detail: Option<&str>,
+        receipt_commit: Option<&str>,
+        receipt_at: i64,
+        executor_version: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE device_instructions SET
+                receipt_status = ?2, receipt_reason = ?3, receipt_detail = ?4,
+                receipt_commit = ?5, receipt_at = ?6, executor_version = ?7
+             WHERE id = ?1",
+            params![id, status, reason, detail, receipt_commit, receipt_at, executor_version],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_device_instruction_state(&self, id: &str, state: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE device_instructions SET state = ?2 WHERE id = ?1",
+            params![id, state],
+        )?;
+        Ok(())
+    }
+}
+
+fn map_device_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceRow> {
+    Ok(DeviceRow {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        platform: row.get(2)?,
+        created_at: row.get(3)?,
+        last_seen_at: row.get(4)?,
+        last_state_commit: row.get(5)?,
+    })
+}
+
+#[allow(clippy::too_many_lines)]
+fn map_instruction_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceInstructionRow> {
+    Ok(DeviceInstructionRow {
+        id: row.get(0)?,
+        device_id: row.get(1)?,
+        action: row.get(2)?,
+        skill_url: row.get(3)?,
+        skill_branch: row.get(4)?,
+        skill_subpath: row.get(5)?,
+        skill_name: row.get(6)?,
+        agent_key: row.get(7)?,
+        created_at: row.get(8)?,
+        expires_at: row.get(9)?,
+        created_by: row.get(10)?,
+        instruction_commit: row.get(11)?,
+        receipt_commit: row.get(12)?,
+        state: row.get(13)?,
+        receipt_status: row.get(14)?,
+        receipt_reason: row.get(15)?,
+        receipt_detail: row.get(16)?,
+        receipt_at: row.get(17)?,
+        executor_version: row.get(18)?,
+    })
 }
 
 #[cfg(test)]
