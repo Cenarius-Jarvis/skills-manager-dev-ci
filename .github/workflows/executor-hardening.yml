@@ -26,4 +26,5 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - name: Test executor in isolated temporary directories
-        run: cargo test --manifest-path src-tauri/Cargo.toml --lib core::device_executor::tests:: -- --test-threads=1
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml --lib core::device_executor::tests:: -- --test-threads=1
