@@ -1,4 +1,18 @@
 {
+  "localInventory": {
+    "title": "本機唯讀清單測試",
+    "hint": "只檢查指定的本機目錄，不連接遠端或執行部署。",
+    "path": "Agent 技能目錄",
+    "allowed": "允許的符號連結目標根目錄（選填）",
+    "run": "檢查清單",
+    "loading": "正在檢查…",
+    "complete": "檢查完成",
+    "incomplete": "結果不完整，請查看提示",
+    "failed": "檢查失敗",
+    "link": "目錄連結",
+    "directory": "一般目錄",
+    "empty": "沒有發現技能。"
+  },
   "app": {
     "name": "Skills Manager"
   },
