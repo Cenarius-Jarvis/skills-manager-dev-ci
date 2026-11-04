@@ -1,4 +1,18 @@
 {
+  "localInventory": {
+    "title": "Prueba de inventario local de solo lectura",
+    "hint": "Solo inspecciona una carpeta local; no conecta ni despliega en remoto.",
+    "path": "Carpeta de habilidades del agente",
+    "allowed": "Raíz permitida para enlaces simbólicos (opcional)",
+    "run": "Inspeccionar",
+    "loading": "Inspeccionando…",
+    "complete": "Inspección completada",
+    "incomplete": "Resultado incompleto; revise los avisos",
+    "failed": "Error de inspección",
+    "link": "Enlace de carpeta",
+    "directory": "Carpeta",
+    "empty": "No se encontraron habilidades."
+  },
   "app": {
     "name": "Skills Manager"
   },
