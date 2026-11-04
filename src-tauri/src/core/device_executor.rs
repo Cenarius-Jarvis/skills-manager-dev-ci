@@ -1014,6 +1014,49 @@ mod tests {
         assert_eq!(snapshot.states[0].agents[0].skills[0].name, "present-skill");
     }
 
+    #[test]
+    fn inventory_run_once_publishes_allowed_link_and_preserves_prior_report_after_denial() {
+        let env = TestEnv::new();
+        let remote = env.base.join("channel-links.git");
+        std::fs::create_dir_all(&remote).unwrap();
+        devices_run_git_init(&remote);
+        let agent = env.base.join("agent-links");
+        let library = env.base.join("approved-library");
+        let skill = library.join("shared");
+        std::fs::create_dir_all(&agent).unwrap();
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(skill.join("SKILL.md"), b"fixture").unwrap();
+        let linked = agent.join("shared");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&skill, &linked).unwrap();
+        #[cfg(windows)]
+        junction::create(&skill, &linked).unwrap();
+        let url = remote.to_string_lossy().to_string();
+        let mut config = ExecutorConfig {
+            url: url.clone(), branch: "devices-test".into(), device_id: "dev-links".into(),
+            agents: vec![AgentMapping { key: "codex".into(), dir: agent }],
+            inventory_allowed_roots: vec![library], max_instructions: 10, dry_run: false,
+        };
+        let first = run_once(&config).unwrap();
+        assert!(first.published, "{:?}", first.publish_error);
+        assert!(first.warnings.is_empty(), "{:?}", first.warnings);
+        let initial = devices::fetch_channel_snapshot(&url, "devices-test").unwrap();
+        assert_eq!(initial.states.len(), 1);
+        assert_eq!(initial.states[0].agents[0].skills[0].name, "shared");
+        let initial_timestamp = initial.states[0].reported_at;
+        let initial_hash = initial.states[0].agents[0].skills[0].content_hash.clone();
+
+        config.inventory_allowed_roots.clear();
+        let second = run_once(&config).unwrap();
+        assert!(second.published, "{:?}", second.publish_error);
+        assert!(second.warnings.iter().any(|w| w.contains("State report not published")));
+        let after = devices::fetch_channel_snapshot(&url, "devices-test").unwrap();
+        assert_eq!(after.states[0].reported_at, initial_timestamp);
+        assert_eq!(after.states[0].agents[0].skills[0].content_hash, initial_hash);
+        #[cfg(windows)]
+        junction::delete(&linked).unwrap();
+    }
+
     fn devices_run_git_init(path: &Path) {
         std::process::Command::new("git")
             .args(["init", "--bare", &path.to_string_lossy()])
