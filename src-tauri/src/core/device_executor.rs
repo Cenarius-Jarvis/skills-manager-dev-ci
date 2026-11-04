@@ -93,6 +93,10 @@ pub struct JournalEntry {
     pub ts: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receipt: Option<DeviceReceipt>,
+    /// Fingerprint of the exact deployed tree after a successful write.
+    /// Legacy journals without this field do not grant destructive access.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_fingerprint: Option<String>,
 }
 
 pub struct Journal {
@@ -148,12 +152,15 @@ impl Journal {
         })
     }
 
-    /// Any record naming this target path: the executor has touched it, so
-    /// replacing or removing it is within its rights. Paths it never wrote
-    /// stay untouchable. (Rejected instructions journal an empty target, so
-    /// refusals never grant ownership.)
-    fn target_known(&self, target: &str) -> bool {
-        !target.is_empty() && self.entries.iter().any(|e| e.target == target)
+    /// Only the latest successful completed deploy grants ownership, and only
+    /// of the exact on-disk tree recorded after that deploy. Started, failed,
+    /// legacy, and completed undeploy records cannot grant ownership.
+    fn owned_fingerprint(&self, target: &str) -> Option<&str> {
+        self.entries.iter().rev()
+            .find(|e| e.target == target && e.status == JOURNAL_COMPLETED)
+            .filter(|e| e.action == devices::ACTION_DEPLOY)
+            .filter(|e| e.receipt.as_ref().is_some_and(|r| r.status == "success"))
+            .and_then(|e| e.target_fingerprint.as_deref())
     }
 
     /// Instructions started but never finished — the previous run died
@@ -217,10 +224,71 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
         let to = dst.join(entry.file_name());
         if file_type.is_dir() {
             copy_dir_recursive(&entry.path(), &to)?;
-        } else {
+        } else if file_type.is_file() {
             std::fs::copy(entry.path(), &to)
                 .with_context(|| format!("failed to copy {}", entry.path().display()))?;
+        } else {
+            bail!("refusing special file in skill source: {}", entry.path().display());
         }
+    }
+    Ok(())
+}
+
+
+/// Hash a directory tree without following links. Include directory names,
+/// file names, lengths and bytes in a deterministic order. Any unreadable,
+/// non-UTF8, symbolic-link or special entry fails closed.
+fn fingerprint_tree(root: &Path) -> Result<String> {
+    fn visit(path: &Path, relative: &Path, hasher: &mut Sha256) -> Result<()> {
+        let meta = std::fs::symlink_metadata(path)?;
+        let ty = meta.file_type();
+        if ty.is_symlink() {
+            bail!("refusing symbolic link: {}", path.display());
+        }
+        let rel = relative.to_str().context("non-UTF8 path in deployed skill")?;
+        let rel_bytes = rel.as_bytes();
+        if ty.is_dir() {
+            hasher.update(b"D");
+            hasher.update((rel_bytes.len() as u64).to_be_bytes());
+            hasher.update(rel_bytes);
+            let mut children = std::fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
+            children.sort_by_key(|e| e.file_name());
+            for child in children {
+                visit(&child.path(), &relative.join(child.file_name()), hasher)?;
+            }
+        } else if ty.is_file() {
+            hasher.update(b"F");
+            hasher.update((rel_bytes.len() as u64).to_be_bytes());
+            hasher.update(rel_bytes);
+            let data = std::fs::read(path)?;
+            hasher.update((data.len() as u64).to_be_bytes());
+            hasher.update(data);
+        } else {
+            bail!("refusing special file: {}", path.display());
+        }
+        Ok(())
+    }
+    if !std::fs::symlink_metadata(root)?.file_type().is_dir() {
+        bail!("deployed target is not a real directory");
+    }
+    let mut hasher = Sha256::new();
+    visit(root, Path::new(""), &mut hasher)?;
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn require_owned_target(journal: &Journal, key: &str, target: &Path) -> Result<(), Reject> {
+    let expected = journal.owned_fingerprint(key).ok_or_else(|| reject(
+        REASON_CONFLICT,
+        format!("{} has no verified successful deploy; refusing modification", target.display()),
+    ))?;
+    let actual = fingerprint_tree(target).map_err(|err| reject(
+        REASON_CONFLICT,
+        format!("cannot safely verify {}: {err}", target.display()),
+    ))?;
+    if actual != expected {
+        return Err(reject(REASON_CONFLICT, format!(
+            "{} changed since deployment; refusing modification", target.display()
+        )));
     }
     Ok(())
 }
@@ -243,13 +311,14 @@ fn base_entry(inst: &DeviceInstruction, commit: &str, target: &str, status: &str
         status: status.to_string(),
         ts: now_ts(),
         receipt: None,
+        target_fingerprint: None,
     }
 }
 
 /// Deploys one skill directory into the mapped agent directory. Returns the
 /// target path. The started journal record is written here; the caller owns
 /// the completed record (it carries the receipt), so a crash between copy and
-/// journal leaves a started trace and the next run safely re-copies.
+/// journal leaves an unverified partial target that needs manual review.
 pub fn apply_deploy(
     agent_root: &Path,
     inst: &DeviceInstruction,
@@ -264,6 +333,12 @@ pub fn apply_deploy(
     if let Err(err) = devices::validate_skill_name(skill_name) {
         return Err(reject(REASON_INVALID_INSTRUCTION, err.to_string()));
     }
+    if !std::fs::symlink_metadata(source_dir)
+        .map(|m| m.file_type().is_dir())
+        .unwrap_or(false)
+    {
+        return Err(reject(REASON_INVALID_INSTRUCTION, "skill source must be a real directory"));
+    }
     if !source_dir.join("SKILL.md").is_file() {
         return Err(reject(
             REASON_INVALID_INSTRUCTION,
@@ -272,22 +347,12 @@ pub fn apply_deploy(
     }
     let target = agent_root.join(skill_name);
     let target_str = journal_target(&inst.agent_key, &target);
-    if target.exists() {
-        if target.is_symlink() || !target.is_dir() {
-            return Err(reject(
-                REASON_CONFLICT,
-                format!("{} exists and is not a directory", target.display()),
-            ));
-        }
-        if !journal.target_known(&target_str) {
-            return Err(reject(
-                REASON_CONFLICT,
-                format!(
-                    "{} was not deployed by this executor; refusing to overwrite",
-                    target.display()
-                ),
-            ));
-        }
+    match std::fs::symlink_metadata(&target) {
+        Ok(_) => require_owned_target(journal, &target_str, &target)?,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(reject(REASON_CONFLICT, format!(
+            "cannot inspect {}: {err}", target.display()
+        ))),
     }
     journal
         .append(base_entry(inst, commit, &target_str, JOURNAL_STARTED))
@@ -314,15 +379,7 @@ pub fn apply_undeploy(
     }
     let target = agent_root.join(skill_name);
     let target_str = journal_target(&inst.agent_key, &target);
-    if !journal.target_known(&target_str) {
-        return Err(reject(
-            REASON_CONFLICT,
-            format!(
-                "{} has no record from this executor; refusing to remove",
-                target.display()
-            ),
-        ));
-    }
+    require_owned_target(journal, &target_str, &target)?;
     journal
         .append(base_entry(inst, commit, &target_str, JOURNAL_STARTED))
         .map_err(|err| reject(REASON_EXECUTION_ERROR, err.to_string()))?;
@@ -505,6 +562,15 @@ pub fn run_once(config: &ExecutorConfig) -> Result<ExecutorRunReport> {
                         Some("") | None => dir.clone(),
                         Some(sub) => dir.join(sub),
                     };
+                    // Subpaths must not escape the fetched checkout via an
+                    // intermediate symlink, even if their text is valid.
+                    let canonical_root = dir.canonicalize()
+                        .map_err(|e| reject(REASON_EXECUTION_ERROR, e.to_string()))?;
+                    let canonical_source = source_dir.canonicalize()
+                        .map_err(|e| reject(REASON_EXECUTION_ERROR, e.to_string()))?;
+                    if !canonical_source.starts_with(&canonical_root) {
+                        return Err(reject(REASON_INVALID_INSTRUCTION, "skill source escapes checkout"));
+                    }
                     let result = apply_deploy(&agent_dir, inst, &source_dir, commit, &mut journal);
                     drop(tmp);
                     result
@@ -529,15 +595,18 @@ pub fn run_once(config: &ExecutorConfig) -> Result<ExecutorRunReport> {
                 );
                 // The completed record (carrying the receipt) is written here,
                 // after the action: a crash before this point leaves only a
-                // started trace, and the next run re-executes safely — the
-                // target is already journal-known, so both deploy and removal
-                // are idempotent over our own writes.
+                // started trace. An interrupted deploy requires manual
+                // review before a later run can modify its partial target.
                 let mut entry = base_entry(
                     inst,
                     commit,
                     &journal_target(&inst.agent_key, &target),
                     JOURNAL_COMPLETED,
                 );
+                if inst.action == devices::ACTION_DEPLOY {
+                    entry.target_fingerprint = Some(fingerprint_tree(&target)
+                        .context("failed to fingerprint deployed target; refusing to claim ownership")?);
+                }
                 entry.receipt = Some(receipt.clone());
                 if let Err(err) = journal.append(entry) {
                     bail!("failed to journal completion for {}: {err}", inst.id);
@@ -663,6 +732,13 @@ mod tests {
         }
     }
 
+    fn complete_deploy(journal: &mut Journal, inst: &DeviceInstruction, commit: &str, target: &Path) {
+        let mut entry = base_entry(inst, commit, &journal_target(&inst.agent_key, target), JOURNAL_COMPLETED);
+        entry.target_fingerprint = Some(fingerprint_tree(target).unwrap());
+        entry.receipt = Some(make_receipt(inst, commit, "success", Some("none"), None));
+        journal.append(entry).unwrap();
+    }
+
     #[test]
     fn deploy_writes_target_and_journals_ownership() {
         let env = TestEnv::new();
@@ -707,7 +783,8 @@ mod tests {
         let inst = instruction("deploy", "demo");
         let mut journal = env.journal();
 
-        apply_deploy(&agent_root, &inst, &source, "c1", &mut journal).unwrap();
+        let target = apply_deploy(&agent_root, &inst, &source, "c1", &mut journal).unwrap();
+        complete_deploy(&mut journal, &inst, "c1", &target);
         let before = std::fs::read_to_string(agent_root.join("demo").join("SKILL.md")).unwrap();
 
         // Same instruction, same commit: run_once's skip path uses completed();
@@ -726,7 +803,8 @@ mod tests {
         let source = skill_source(&env.base, "demo");
         let inst = instruction("deploy", "demo");
         let mut journal = env.journal();
-        apply_deploy(&agent_root, &inst, &source, "c1", &mut journal).unwrap();
+        let target = apply_deploy(&agent_root, &inst, &source, "c1", &mut journal).unwrap();
+        complete_deploy(&mut journal, &inst, "c1", &target);
         assert!(agent_root.join("demo").join("SKILL.md").is_file());
 
         // Foreign target is refused.
@@ -758,6 +836,64 @@ mod tests {
             assert_eq!(err.reason, REASON_EXECUTION_ERROR);
             assert!(!agent_root.join("tricky").join("escape").exists());
         }
+    }
+
+
+    #[test]
+    fn changed_or_replaced_target_cannot_be_overwritten_or_removed() {
+        let env = TestEnv::new();
+        let agent = env.base.join("agent");
+        std::fs::create_dir_all(&agent).unwrap();
+        let source = skill_source(&env.base, "demo");
+        let inst = instruction("deploy", "demo");
+        let mut journal = env.journal();
+        let target = apply_deploy(&agent, &inst, &source, "c1", &mut journal).unwrap();
+        complete_deploy(&mut journal, &inst, "c1", &target);
+
+        std::fs::write(target.join("assets").join("note.txt"), "user changes").unwrap();
+        assert_eq!(apply_deploy(&agent, &inst, &source, "c2", &mut journal).unwrap_err().reason, REASON_CONFLICT);
+        assert_eq!(apply_undeploy(&agent, &instruction("undeploy", "demo"), "c2", &mut journal).unwrap_err().reason, REASON_CONFLICT);
+        assert_eq!(std::fs::read_to_string(target.join("assets").join("note.txt")).unwrap(), "user changes");
+    }
+
+    #[test]
+    fn started_and_legacy_records_do_not_claim_existing_directory() {
+        let env = TestEnv::new();
+        let agent = env.base.join("agent");
+        let target = agent.join("demo");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("SKILL.md"), "foreign").unwrap();
+        let source = skill_source(&env.base, "demo");
+        let inst = instruction("deploy", "demo");
+        let mut journal = env.journal();
+        let key = journal_target(&inst.agent_key, &target);
+        journal.append(base_entry(&inst, "c1", &key, JOURNAL_STARTED)).unwrap();
+        assert_eq!(apply_deploy(&agent, &inst, &source, "c1", &mut journal).unwrap_err().reason, REASON_CONFLICT);
+        let mut legacy = base_entry(&inst, "c0", &key, JOURNAL_COMPLETED);
+        legacy.receipt = Some(make_receipt(&inst, "c0", "success", Some("none"), None));
+        journal.append(legacy).unwrap();
+        assert_eq!(apply_undeploy(&agent, &instruction("undeploy", "demo"), "c2", &mut journal).unwrap_err().reason, REASON_CONFLICT);
+        assert_eq!(std::fs::read_to_string(target.join("SKILL.md")).unwrap(), "foreign");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_inserted_in_owned_target_is_conflict() {
+        let env = TestEnv::new();
+        let agent = env.base.join("agent");
+        std::fs::create_dir_all(&agent).unwrap();
+        let source = skill_source(&env.base, "demo");
+        let inst = instruction("deploy", "demo");
+        let mut journal = env.journal();
+        let target = apply_deploy(&agent, &inst, &source, "c1", &mut journal).unwrap();
+        complete_deploy(&mut journal, &inst, "c1", &target);
+        let external = env.base.join("external");
+        std::fs::create_dir_all(&external).unwrap();
+        std::fs::write(external.join("note.txt"), "untouched").unwrap();
+        std::fs::remove_dir_all(target.join("assets")).unwrap();
+        std::os::unix::fs::symlink(&external, target.join("assets")).unwrap();
+        assert_eq!(apply_deploy(&agent, &inst, &source, "c2", &mut journal).unwrap_err().reason, REASON_CONFLICT);
+        assert_eq!(std::fs::read_to_string(external.join("note.txt")).unwrap(), "untouched");
     }
 
     #[test]
