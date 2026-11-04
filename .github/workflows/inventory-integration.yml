@@ -1,0 +1,44 @@
+name: Inventory integration checks
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/device-inventory-readonly]
+    paths:
+      - 'src/**'
+      - 'src-tauri/src/**'
+      - '.github/workflows/inventory-integration.yml'
+concurrency:
+  group: inventory-integration-checks
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  frontend:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Test local inventory panel
+        run: npm test -- src/components/LocalInventoryPreview.test.tsx
+      - name: Build frontend
+        run: npm run build
+      - name: Check translations
+        run: node scripts/check-i18n.mjs
+  backend:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: src-tauri
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: Test inventory and compile all targets
+        run: cargo test --manifest-path src-tauri/Cargo.toml device_inventory
