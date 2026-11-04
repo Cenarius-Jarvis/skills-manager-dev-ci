@@ -462,6 +462,37 @@
       "apply": "{{count}}개 동기화",
       "noAgents": "설치되어 있고 사용 중인 에이전트가 없습니다.",
       "allSynced": "선택한 스킬이 모두 이 에이전트에 이미 있습니다"
+    },
+    "layerActions": {
+      "move": "레이어로 이동…"
+    },
+    "layerChips": {
+      "ungrouped": "그룹 없음",
+      "manage": "레이어"
+    },
+    "layerDialog": {
+      "moveTitle": "\"{{name}}\"을(를) 레이어로 이동",
+      "root": "그룹 없음(라이브러리 루트)",
+      "confirm": "이동",
+      "moved": "이동됨",
+      "working": "처리 중…"
+    },
+    "layerManage": {
+      "title": "레이어 관리",
+      "empty": "아직 레이어가 없습니다. 만들어 스킬을 그룹화하세요.",
+      "placeholder": "새 레이어 이름",
+      "create": "만들기",
+      "created": "레이어 생성됨",
+      "renamed": "레이어 이름 변경됨",
+      "deleted": "레이어 삭제됨"
+    },
+    "layerSuggest": {
+      "title": "레이어로 라이브러리를 정리할까요?",
+      "hint": "추천: \"本机\"은 이 컴퓨터용, \"E470C\"는 E470C 미러용.",
+      "createBoth": "둘 다 만들기",
+      "dismiss": "나중에",
+      "localName": "本机",
+      "remoteName": "E470C"
     }
   },
   "install": {

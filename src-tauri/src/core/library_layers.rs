@@ -45,6 +45,19 @@ pub struct LibraryLayer {
     pub skill_count: usize,
 }
 
+#[derive(Debug, Serialize)]
+pub struct SkillLayerAssignment {
+    pub skill_id: String,
+    pub skill_name: String,
+    pub layer: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LibraryLayersOverview {
+    pub layers: Vec<LibraryLayer>,
+    pub assignments: Vec<SkillLayerAssignment>,
+}
+
 /// Validates and normalizes a layer name. Layer names are user-defined
 /// display labels that double as directory names, so filesystem-hostile
 /// characters, traversal, and reserved names are refused; CJK and spaces
@@ -147,30 +160,41 @@ pub fn create_layer(store: &SkillStore, name: &str) -> Result<String> {
 
 /// Lists on-disk layers unioned with layer prefixes referenced by the DB.
 /// Skill counts come from the store (the DB is what the UI shows).
-pub fn list_layers(store: &SkillStore) -> Result<Vec<LibraryLayer>> {
+pub fn overview(store: &SkillStore) -> Result<LibraryLayersOverview> {
     let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut assignments = Vec::new();
     for skill in store.get_all_skills()? {
-        let location = relative_location(Path::new(&skill.central_path))?;
-        if let Some(layer) = layer_of_location(&location) {
-            *counts.entry(layer).or_insert(0) += 1;
+        let layer = relative_location(Path::new(&skill.central_path))
+            .ok()
+            .and_then(|location| layer_of_location(&location));
+        if let Some(layer) = &layer {
+            *counts.entry(layer.clone()).or_insert(0) += 1;
         }
+        assignments.push(SkillLayerAssignment {
+            skill_id: skill.id.clone(),
+            skill_name: skill.name.clone(),
+            layer,
+        });
     }
     let root = central_repo::skills_dir();
-    let entries = match std::fs::read_dir(&root) {
-        Ok(entries) => entries,
-        Err(_) => return Ok(counts.into_iter().map(|(name, skill_count)| LibraryLayer { name, skill_count }).collect()),
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if !dir_is_layer(&entry.path()) || RESERVED_LAYER_NAMES.contains(&name.as_str()) {
-            continue;
+    if let Ok(entries) = std::fs::read_dir(&root) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !dir_is_layer(&entry.path()) || RESERVED_LAYER_NAMES.contains(&name.as_str()) {
+                continue;
+            }
+            counts.entry(name).or_insert(0);
         }
-        counts.entry(name).or_insert(0);
     }
-    Ok(counts
+    let layers = counts
         .into_iter()
         .map(|(name, skill_count)| LibraryLayer { name, skill_count })
-        .collect())
+        .collect();
+    Ok(LibraryLayersOverview { layers, assignments })
+}
+
+pub fn list_layers(store: &SkillStore) -> Result<Vec<LibraryLayer>> {
+    Ok(overview(store)?.layers)
 }
 
 /// Moves a skill (its library directory) into `layer`, or to the root when
@@ -556,17 +580,29 @@ mod tests {
     }
 
     #[test]
-    fn list_layers_counts_from_store_and_disk() {
+    fn overview_counts_assignments_and_layers() {
         let env = TestEnv::new();
         env.seed_skill("s1", "demo", Some("E470C"));
         env.seed_skill("s2", "demo2", None);
         create_layer(&env.store, "空层").unwrap();
 
-        let layers = list_layers(&env.store).unwrap();
-        let e470c = layers.iter().find(|l| l.name == "E470C").unwrap();
+        let overview = overview(&env.store).unwrap();
+        let e470c = overview.layers.iter().find(|l| l.name == "E470C").unwrap();
         assert_eq!(e470c.skill_count, 1);
-        assert!(layers.iter().any(|l| l.name == "空层" && l.skill_count == 0));
-        assert!(!layers.iter().any(|l| l.name == "demo2"));
+        assert!(overview.layers.iter().any(|l| l.name == "空层" && l.skill_count == 0));
+        assert!(!overview.layers.iter().any(|l| l.name == "demo2"));
+        let s1 = overview
+            .assignments
+            .iter()
+            .find(|a| a.skill_id == "s1")
+            .unwrap();
+        assert_eq!(s1.layer.as_deref(), Some("E470C"));
+        let s2 = overview
+            .assignments
+            .iter()
+            .find(|a| a.skill_id == "s2")
+            .unwrap();
+        assert_eq!(s2.layer, None);
     }
 
     #[test]

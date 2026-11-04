@@ -38,6 +38,7 @@ import { useApp } from "../context/AppContext";
 import { useSkillViewMode } from "../hooks/useSkillViewMode";
 import { useMultiSelect } from "../hooks/useMultiSelect";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { LayerMoveDialog, LayerManageDialog, LayerSuggestBanner } from "../components/LibraryLayerDialogs";
 import { TagRenameDialog } from "../components/TagRenameDialog";
 import { SkillDetailPanel } from "../components/SkillDetailPanel";
 import { MultiSelectToolbar } from "../components/MultiSelectToolbar";
@@ -210,6 +211,14 @@ export function MySkills() {
   const [tagInput, setTagInput] = useState("");
   const tagInputRef = useRef<HTMLInputElement>(null);
 
+  // Library layers: user-named subdirectories grouping the library. The
+  // overview (layers + per-skill assignment) refreshes alongside skills.
+  const [layersOverview, setLayersOverview] = useState<api.LibraryLayersOverview | null>(null);
+  const [layerFilters, setLayerFilters] = useState<Set<string>>(new Set());
+  const [layerMoveSkill, setLayerMoveSkill] = useState<ManagedSkill | null>(null);
+  const [layerManageOpen, setLayerManageOpen] = useState(false);
+  const [layerSuggestDismissed, setLayerSuggestDismissed] = useState(false);
+
   const [presetSkillOrder, setPresetSkillOrder] = useState<string[]>([]);
 
   const viewedPresetName = viewedPreset?.name || t("mySkills.currentPresetFallback");
@@ -231,6 +240,30 @@ export function MySkills() {
       .then((rows) => setConflictIds(new Set(rows.map((row) => row.skill_id))))
       .catch(() => setConflictIds(new Set()));
   }, [skills]);
+
+  useEffect(() => {
+    api.libraryLayersGet()
+      .then(setLayersOverview)
+      .catch(() => setLayersOverview(null));
+  }, [skills]);
+
+  const layerBySkillId = useMemo(() => {
+    const map = new Map<string, string | null>();
+    for (const assignment of layersOverview?.assignments ?? []) {
+      map.set(assignment.skill_id, assignment.layer);
+    }
+    return map;
+  }, [layersOverview]);
+
+  const layerChips = useMemo(() => {
+    const items: { key: string; label: string; count: number }[] = [
+      { key: "", label: t("mySkills.layerChips.ungrouped"), count: 0 },
+    ];
+    for (const layer of layersOverview?.layers ?? []) {
+      items.push({ key: layer.name, label: layer.name, count: layer.skill_count });
+    }
+    return items;
+  }, [layersOverview, t]);
 
   const refreshAllTags = async () => {
     try {
@@ -283,12 +316,14 @@ export function MySkills() {
   const hasActiveFilters =
     search.trim() !== "" ||
     channelFilters.size > 0 ||
+    layerFilters.size > 0 ||
     tagFilters.size > 0 ||
     sourceSelection.size > 0 ||
     filterMode !== "all";
   const clearFilters = () => {
     setSearch("");
     setChannelFilters(new Set());
+    setLayerFilters(new Set());
     setTagFilters(new Set());
     setSourceSelection(new Set());
     setFilterMode("all");
@@ -334,6 +369,11 @@ export function MySkills() {
         if (!matchUntagged && !matchTag) return false;
       }
 
+      if (layerFilters.size > 0) {
+        const layer = layerBySkillId.get(skill.id) ?? "";
+        if (layer === "" ? !layerFilters.has("") : !layerFilters.has(layer)) return false;
+      }
+
       if (!viewedPreset) return true;
 
       const enabledInPreset = skill.preset_ids.includes(viewedPreset.id);
@@ -374,7 +414,7 @@ export function MySkills() {
       sourceCandidates: candidates,
       preSelectionSourceGroups: groups,
     };
-  }, [skills, skillDisplayNames, search, channelFilters, tagFilters, sourceSelection, filterMode, viewedPreset, presetSkillOrder]);
+  }, [skills, skillDisplayNames, search, channelFilters, layerFilters, layerBySkillId, tagFilters, sourceSelection, filterMode, viewedPreset, presetSkillOrder]);
 
   // Without a source selection the groups from above already describe
   // `filtered`; only a narrowing selection forces a rebuild. That rebuild must
@@ -1329,6 +1369,54 @@ export function MySkills() {
         </div>
       </div>
 
+      {layersOverview && layersOverview.layers.length === 0 && skills.length > 0 && !layerSuggestDismissed && (
+        <LayerSuggestBanner
+          visible
+          onCreateBoth={() => {
+            setLayerSuggestDismissed(true);
+            api.libraryLayersGet().then(setLayersOverview).catch(() => {});
+          }}
+          onDismiss={() => setLayerSuggestDismissed(true)}
+        />
+      )}
+
+      {layersOverview && layersOverview.layers.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1 px-1">
+          {layerChips.map((chip) => (
+            <button
+              key={chip.key === "" ? "__ungrouped__" : chip.key}
+              onClick={() =>
+                setLayerFilters((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(chip.key)) {
+                    next.delete(chip.key);
+                  } else {
+                    next.add(chip.key);
+                  }
+                  return next;
+                })
+              }
+              className={cn(
+                "rounded-full px-2.5 py-0.5 text-[12px] font-medium transition-colors inline-flex items-center gap-1",
+                layerFilters.has(chip.key)
+                  ? "bg-accent text-white dark:bg-accent dark:text-white"
+                  : "bg-surface-hover text-muted hover:text-secondary"
+              )}
+            >
+              {chip.label}
+              {chip.count > 0 && <span className="opacity-70">{chip.count}</span>}
+            </button>
+          ))}
+          <button
+            onClick={() => setLayerManageOpen(true)}
+            className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[12px] font-medium transition-colors bg-surface-hover text-muted hover:text-secondary"
+          >
+            <Layers className="h-3 w-3" />
+            {t("mySkills.layerChips.manage")}
+          </button>
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center gap-1 px-1 -mt-2 -mb-3">
         {(["local", "import", "git", "skillssh"] as const).map((channel) => (
           <button
@@ -1684,6 +1772,12 @@ export function MySkills() {
                                 }]
                               : []),
                             {
+                              key: "layer",
+                              label: t("mySkills.layerActions.move"),
+                              icon: <Layers className="h-3.5 w-3.5" />,
+                              onSelect: () => setLayerMoveSkill(skill),
+                            },
+                            {
                               key: "delete",
                               label: t("common.delete"),
                               icon: <Trash2 className="h-3.5 w-3.5" />,
@@ -2024,6 +2118,12 @@ export function MySkills() {
                             }]
                           : []),
                         {
+                          key: "layer",
+                          label: t("mySkills.layerActions.move"),
+                          icon: <Layers className="h-3.5 w-3.5" />,
+                          onSelect: () => setLayerMoveSkill(skill),
+                        },
+                        {
                           key: "delete",
                           label: t("common.delete"),
                           icon: <Trash2 className="h-3.5 w-3.5" />,
@@ -2171,6 +2271,26 @@ export function MySkills() {
         tools={tools}
         onClose={() => setBatchSyncDialogOpen(false)}
         onApply={handleBatchSyncAgents}
+      />
+      <LayerMoveDialog
+        open={layerMoveSkill !== null}
+        skill={layerMoveSkill}
+        layers={layersOverview?.layers ?? []}
+        currentLayer={layerMoveSkill ? layerBySkillId.get(layerMoveSkill.id) ?? null : null}
+        onClose={() => setLayerMoveSkill(null)}
+        onMoved={() => {
+          api.libraryLayersGet().then(setLayersOverview).catch(() => {});
+          refreshManagedSkills();
+        }}
+      />
+      <LayerManageDialog
+        open={layerManageOpen}
+        layers={layersOverview?.layers ?? []}
+        onClose={() => setLayerManageOpen(false)}
+        onChanged={() => {
+          api.libraryLayersGet().then(setLayersOverview).catch(() => {});
+          refreshManagedSkills();
+        }}
       />
     </div>
   );

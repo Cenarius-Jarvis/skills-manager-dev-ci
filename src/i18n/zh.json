@@ -468,6 +468,37 @@
       "apply": "同步 {{count}} 项",
       "noAgents": "没有已安装并启用的 Agent。",
       "allSynced": "选中的 Skill 都已同步到这个 Agent"
+    },
+    "layerActions": {
+      "move": "移动到层…"
+    },
+    "layerChips": {
+      "ungrouped": "未分组",
+      "manage": "层"
+    },
+    "layerDialog": {
+      "moveTitle": "移动「{{name}}」到层",
+      "root": "未分组（库根）",
+      "confirm": "移动",
+      "moved": "已移动",
+      "working": "处理中…"
+    },
+    "layerManage": {
+      "title": "层管理",
+      "empty": "还没有层。创建层来给技能分组。",
+      "placeholder": "输入新层名",
+      "create": "创建",
+      "created": "层已创建",
+      "renamed": "层已重命名",
+      "deleted": "层已删除"
+    },
+    "layerSuggest": {
+      "title": "用层来组织技能库？",
+      "hint": "建议先建两个层：「本机」放本机技能，「E470C」放 E470C 镜像同步来的技能。",
+      "createBoth": "创建这两个层",
+      "dismiss": "稍后再说",
+      "localName": "本机",
+      "remoteName": "E470C"
     }
   },
   "install": {

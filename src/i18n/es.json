@@ -462,7 +462,38 @@
       "updating": "Actualizando"
     },
     "viewDoc": "Ver documentos",
-    "viewUpdates": "Ver"
+    "viewUpdates": "Ver",
+    "layerActions": {
+      "move": "Mover a capa…"
+    },
+    "layerChips": {
+      "ungrouped": "Sin capa",
+      "manage": "Capas"
+    },
+    "layerDialog": {
+      "moveTitle": "Mover \"{{name}}\" a una capa",
+      "root": "Sin capa (raíz de la biblioteca)",
+      "confirm": "Mover",
+      "moved": "Movida",
+      "working": "Procesando…"
+    },
+    "layerManage": {
+      "title": "Administrar capas",
+      "empty": "Aún no hay capas. Crea una para agrupar habilidades.",
+      "placeholder": "Nombre de la nueva capa",
+      "create": "Crear",
+      "created": "Capa creada",
+      "renamed": "Capa renombrada",
+      "deleted": "Capa eliminada"
+    },
+    "layerSuggest": {
+      "title": "¿Organizar tu biblioteca con capas?",
+      "hint": "Sugerencias: \"本机\" para esta máquina, \"E470C\" para el reflejo de E470C.",
+      "createBoth": "Crear ambas",
+      "dismiss": "Más tarde",
+      "localName": "本机",
+      "remoteName": "E470C"
+    }
   },
   "install": {
     "all": "Histórico",

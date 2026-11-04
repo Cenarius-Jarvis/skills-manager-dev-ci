@@ -468,6 +468,37 @@
       "apply": "Sync {{count}}",
       "noAgents": "No installed and enabled agents.",
       "allSynced": "Every selected skill is already on this agent"
+    },
+    "layerActions": {
+      "move": "Move to layer…"
+    },
+    "layerChips": {
+      "ungrouped": "Ungrouped",
+      "manage": "Layers"
+    },
+    "layerDialog": {
+      "moveTitle": "Move \"{{name}}\" to a layer",
+      "root": "Ungrouped (library root)",
+      "confirm": "Move",
+      "moved": "Moved",
+      "working": "Working…"
+    },
+    "layerManage": {
+      "title": "Manage layers",
+      "empty": "No layers yet. Create one to group skills.",
+      "placeholder": "New layer name",
+      "create": "Create",
+      "created": "Layer created",
+      "renamed": "Layer renamed",
+      "deleted": "Layer deleted"
+    },
+    "layerSuggest": {
+      "title": "Organize your library with layers?",
+      "hint": "Suggested starters: \"本机\" for this machine, \"E470C\" for the E470C mirror.",
+      "createBoth": "Create both",
+      "dismiss": "Later",
+      "localName": "本机",
+      "remoteName": "E470C"
     }
   },
   "install": {

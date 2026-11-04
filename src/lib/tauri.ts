@@ -862,3 +862,36 @@ export const updateGlobalLocalSkillFromCenter = (agent: string, skillRelativePat
 
 export const deleteGlobalLocalSkill = (agent: string, skillRelativePath: string) =>
   invoke<void>("delete_global_local_skill", { agent, skillRelativePath });
+
+// ── Library layers ──
+
+export interface LibraryLayer {
+  name: string;
+  skill_count: number;
+}
+
+export interface SkillLayerAssignment {
+  skill_id: string;
+  skill_name: string;
+  layer: string | null;
+}
+
+export interface LibraryLayersOverview {
+  layers: LibraryLayer[];
+  assignments: SkillLayerAssignment[];
+}
+
+export const libraryLayersGet = () =>
+  invoke<LibraryLayersOverview>("library_layers_get");
+
+export const libraryLayerCreate = (name: string) =>
+  invoke<string>("library_layer_create", { name });
+
+export const libraryLayerRename = (oldName: string, newName: string) =>
+  invoke<string>("library_layer_rename", { old: oldName, new: newName });
+
+export const libraryLayerDelete = (name: string) =>
+  invoke<void>("library_layer_delete", { name });
+
+export const librarySkillMove = (skillId: string, layer?: string) =>
+  invoke<void>("library_skill_move", { skillId, layer });

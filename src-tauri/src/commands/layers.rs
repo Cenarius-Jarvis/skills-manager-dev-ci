@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::core::error::AppError;
-use crate::core::library_layers::{self, LibraryLayer};
+use crate::core::library_layers::{self, LibraryLayersOverview};
 use crate::core::skill_store::SkillStore;
 
 fn input_err(err: anyhow::Error) -> AppError {
@@ -16,10 +16,10 @@ fn input_err(err: anyhow::Error) -> AppError {
 #[tauri::command]
 pub async fn library_layers_get(
     store: State<'_, Arc<SkillStore>>,
-) -> Result<Vec<LibraryLayer>, AppError> {
+) -> Result<LibraryLayersOverview, AppError> {
     let store = store.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        library_layers::list_layers(&store).map_err(input_err)
+        library_layers::overview(&store).map_err(input_err)
     })
     .await?
 }
