@@ -215,6 +215,10 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
+        #[cfg(windows)]
+        if file_type.is_dir() && junction::exists(entry.path())? {
+            bail!("refusing junction in skill source: {}", entry.path().display());
+        }
         if file_type.is_symlink() {
             bail!(
                 "refusing symlink in skill source: {}",
@@ -351,18 +355,53 @@ pub fn apply_deploy(
     }
     let target = agent_root.join(skill_name);
     let target_str = journal_target(&inst.agent_key, &target);
-    match std::fs::symlink_metadata(&target) {
-        Ok(_) => require_owned_target(journal, &target_str, &target)?,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+    let existed = match std::fs::symlink_metadata(&target) {
+        Ok(_) => { require_owned_target(journal, &target_str, &target)?; true }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
         Err(err) => return Err(reject(REASON_CONFLICT, format!(
             "cannot inspect {}: {err}", target.display()
         ))),
+    };
+    // Build the new tree separately: copying directly into an existing file
+    // could modify an unrelated file through a hard link. Keep the old tree
+    // until the replacement is ready and ownership has been rechecked.
+    std::fs::create_dir_all(agent_root)
+        .map_err(|err| reject(REASON_EXECUTION_ERROR, err.to_string()))?;
+    let staging = tempfile::Builder::new().prefix(".skills-executor-stage-")
+        .tempdir_in(agent_root)
+        .map_err(|err| reject(REASON_EXECUTION_ERROR, err.to_string()))?;
+    let next = staging.path().join("next");
+    copy_dir_recursive(source_dir, &next)
+        .map_err(|err| reject(REASON_EXECUTION_ERROR, err.to_string()))?;
+    if existed {
+        require_owned_target(journal, &target_str, &target)?;
+    } else {
+        match std::fs::symlink_metadata(&target) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(_) => return Err(reject(REASON_CONFLICT, "target appeared during staging")),
+            Err(err) => return Err(reject(REASON_CONFLICT, err.to_string())),
+        }
     }
     journal
         .append(base_entry(inst, commit, &target_str, JOURNAL_STARTED))
         .map_err(|err| reject(REASON_EXECUTION_ERROR, err.to_string()))?;
-    if let Err(err) = copy_dir_recursive(source_dir, &target) {
-        return Err(reject(REASON_EXECUTION_ERROR, err.to_string()));
+    let previous = staging.path().join("previous");
+    if existed {
+        std::fs::rename(&target, &previous)
+            .map_err(|err| reject(REASON_EXECUTION_ERROR, format!("could not stage previous target: {err}")))?;
+    }
+    if let Err(err) = std::fs::rename(&next, &target) {
+        if existed {
+            if let Err(rollback_err) = std::fs::rename(&previous, &target) {
+                // Preserve the old directory for manual recovery.
+                let recovery = staging.keep();
+                return Err(reject(REASON_EXECUTION_ERROR, format!(
+                    "replacement failed: {err}; rollback failed: {rollback_err}; previous files preserved at {}",
+                    recovery.join("previous").display()
+                )));
+            }
+        }
+        return Err(reject(REASON_EXECUTION_ERROR, format!("replacement failed: {err}")));
     }
     Ok(target)
 }
@@ -937,6 +976,27 @@ mod tests {
         junction::create(&external, target.join("assets")).unwrap();
         assert_eq!(apply_deploy(&agent, &inst, &source, "c2", &mut journal).unwrap_err().reason, REASON_CONFLICT);
         assert_eq!(std::fs::read_to_string(external.join("note.txt")).unwrap(), "untouched");
+    }
+
+
+    #[test]
+    fn update_does_not_write_through_hardlinks_in_existing_target() {
+        let env = TestEnv::new();
+        let agent = env.base.join("agent");
+        std::fs::create_dir_all(&agent).unwrap();
+        let source = skill_source(&env.base, "demo");
+        let inst = instruction("deploy", "demo");
+        let mut journal = env.journal();
+        let target = apply_deploy(&agent, &inst, &source, "c1", &mut journal).unwrap();
+        let external = env.base.join("external.txt");
+        std::fs::write(&external, "data").unwrap();
+        std::fs::remove_file(target.join("assets").join("note.txt")).unwrap();
+        std::fs::hard_link(&external, target.join("assets").join("note.txt")).unwrap();
+        complete_deploy(&mut journal, &inst, "c1", &target);
+        std::fs::write(source.join("assets").join("note.txt"), "updated").unwrap();
+        apply_deploy(&agent, &inst, &source, "c2", &mut journal).unwrap();
+        assert_eq!(std::fs::read_to_string(&external).unwrap(), "data");
+        assert_eq!(std::fs::read_to_string(target.join("assets").join("note.txt")).unwrap(), "updated");
     }
 
     #[test]
