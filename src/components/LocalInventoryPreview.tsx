@@ -45,7 +45,7 @@ export function LocalInventoryPreview() {
       {result && <div className="mt-3" aria-live="polite">
         <p className="text-[13px]">{result.complete ? t("localInventory.complete") : t("localInventory.incomplete")}</p>
         {!result.complete && <ul className="mt-2 text-[13px] text-amber-600 dark:text-amber-400">{result.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}
-        {result.skills.length === 0 ? <p className="mt-2 text-[13px] text-muted">{t("localInventory.empty")}</p> : <ul className="mt-2 text-[13px]">{result.skills.map((skill) => <li key={skill.name}>{skill.name} · {skill.symlink ? t("localInventory.link") : t("localInventory.directory")}</li>)}</ul>}
+        {result.skills.length === 0 ? (result.complete ? <p className="mt-2 text-[13px] text-muted">{t("localInventory.empty")}</p> : null) : <ul className="mt-2 text-[13px]">{result.skills.map((skill) => <li key={skill.name}>{skill.name} · {skill.symlink ? t("localInventory.link") : t("localInventory.directory")}</li>)}</ul>}
       </div>}
     </details>
   );
