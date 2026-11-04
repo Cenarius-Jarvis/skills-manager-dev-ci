@@ -4,6 +4,7 @@ on:
     branches: [codex/executor-ownership-hardening]
     paths:
       - 'src-tauri/src/core/device_executor.rs'
+      - 'src-tauri/src/bin/skills-manager-cli.rs'
       - '.github/workflows/executor-hardening.yml'
   workflow_dispatch:
 permissions:
@@ -28,3 +29,6 @@ jobs:
       - name: Test executor in isolated temporary directories
         run: |
           cargo test --manifest-path src-tauri/Cargo.toml --lib core::device_executor::tests:: -- --test-threads=1
+      - name: Test CLI dry-run preflight
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml --bin skills-manager-cli executor_dry_run_requires_explicit_identity_before_store_initialization
