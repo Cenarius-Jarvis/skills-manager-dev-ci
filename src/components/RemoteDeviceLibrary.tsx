@@ -149,12 +149,3 @@ export function RemoteDeviceLibrary({
     </div>
   );
 }
-
-export function RemoteLoading({ label }: { label: string }) {
-  return (
-    <div className="flex items-center gap-2 p-6 text-[13px] text-muted">
-      <Loader2 className="h-4 w-4 animate-spin" />
-      {label}
-    </div>
-  );
-}
