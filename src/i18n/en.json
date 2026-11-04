@@ -1,4 +1,18 @@
 {
+  "localInventory": {
+    "title": "Local read-only inventory test",
+    "hint": "Inspect a local directory only. No remote connection or deployment.",
+    "path": "Agent skills directory",
+    "allowed": "Allowed symlink target root (optional)",
+    "run": "Inspect inventory",
+    "loading": "Inspecting…",
+    "complete": "Inspection complete",
+    "incomplete": "Incomplete result; see warnings",
+    "failed": "Inspection failed",
+    "link": "Directory link",
+    "directory": "Directory",
+    "empty": "No skills found."
+  },
   "app": {
     "name": "Skills Manager"
   },
