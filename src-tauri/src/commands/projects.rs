@@ -165,14 +165,36 @@ fn project_agent_targets_for_record(
         .into_iter()
         .collect();
 
+    let adapters = tool_adapters::all_tool_adapters(store);
     agent_skill_configs(store)
         .into_iter()
         .map(|config| {
-            let adapter = tool_adapters::find_adapter_with_store(store, &config.key);
+            // One row stands for every agent that reads this project directory
+            // (Cline, Warp and GitLab Duo all read `.agents/skills`), under the
+            // key of whichever comes first. It is usable while any of them is
+            // installed and enabled, not only the one whose key it carries.
+            let sharing: Vec<_> = adapters
+                .iter()
+                .filter(|adapter| {
+                    adapter.project_relative_skills_dir() == config.relative_skills_dir
+                })
+                .collect();
+            let installed: Vec<bool> = sharing
+                .iter()
+                .map(|adapter| adapter.is_installed())
+                .collect();
+            let any_installed = installed.contains(&true);
+            // Count only the agents that are installed; with none installed the
+            // row is unavailable anyway and reports that first.
+            let enabled = sharing
+                .iter()
+                .zip(&installed)
+                .filter(|(_, installed)| **installed || !any_installed)
+                .any(|(adapter, _)| !disabled_tools.contains(&adapter.key));
             ProjectAgentTargetDto {
-                enabled: !disabled_tools.contains(&config.key),
-                installed: adapter.as_ref().map(|a| a.is_installed()).unwrap_or(false),
-                is_custom: adapter.as_ref().map(|a| a.is_custom).unwrap_or(false),
+                enabled,
+                installed: any_installed,
+                is_custom: sharing.first().is_some_and(|adapter| adapter.is_custom),
                 key: config.key,
                 display_name: config.display_name,
             }
@@ -1315,9 +1337,68 @@ mod tests {
     use crate::core::content_hash;
     use crate::core::error::ErrorKind;
     use crate::core::project_scanner::{AgentSkillConfig, ProjectSkillInfo};
-    use crate::core::skill_store::{ProjectRecord, SkillRecord};
+    use crate::core::skill_store::{ProjectRecord, SkillRecord, SkillStore};
     use std::fs;
     use tempfile::tempdir;
+
+    /// Several agents share `.agents/skills` in a project, and their row carries
+    /// the first one's key. That agent being off must not take the directory
+    /// away from Warp; only all of them being off does. Which agent comes first
+    /// changes as adapters are added (#605 put Antigravity ahead of Cline), so
+    /// the test reads it instead of naming it.
+    #[test]
+    fn a_shared_project_dir_stays_usable_while_another_agent_reads_it() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("skills.db")).unwrap();
+        // A path override counts as installed, whatever is on this machine.
+        let warp_path = tmp.path().join("warp-skills").to_string_lossy().to_string();
+        store
+            .set_setting(
+                "custom_tool_paths",
+                &serde_json::json!({ "warp": warp_path }).to_string(),
+            )
+            .unwrap();
+        let record = ProjectRecord {
+            id: "p".to_string(),
+            name: "p".to_string(),
+            path: tmp.path().to_string_lossy().to_string(),
+            workspace_type: "project".to_string(),
+            linked_agent_key: None,
+            linked_agent_name: None,
+            disabled_path: None,
+            sort_order: 0,
+            created_at: 0,
+            updated_at: 0,
+        };
+        let shared_row = |store: &SkillStore| {
+            super::project_agent_targets_for_record(store, &record)
+                .into_iter()
+                .find(|target| target.display_name.contains("Warp"))
+                .expect("a row for the shared .agents/skills directory")
+        };
+
+        let disable = |store: &SkillStore, keys: &[String]| {
+            store
+                .set_setting("disabled_tools", &serde_json::to_string(keys).unwrap())
+                .unwrap();
+        };
+
+        let key = shared_row(&store).key;
+        assert_ne!(key, "warp", "the row must be keyed under another agent");
+        disable(&store, &[key.clone()]);
+        let row = shared_row(&store);
+        assert_eq!(row.key, key);
+        assert!(row.installed, "Warp is installed");
+        assert!(row.enabled, "Warp still reads the directory");
+
+        let sharing: Vec<String> = crate::core::tool_adapters::all_tool_adapters(&store)
+            .into_iter()
+            .filter(|adapter| adapter.project_relative_skills_dir() == ".agents/skills")
+            .map(|adapter| adapter.key)
+            .collect();
+        disable(&store, &sharing);
+        assert!(!shared_row(&store).enabled, "nobody left to read it");
+    }
 
     fn sample_managed_skill(
         central_path: String,
