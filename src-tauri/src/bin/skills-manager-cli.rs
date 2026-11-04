@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::{Context, anyhow, bail};
 use app_lib::commands::{presets as preset_cmd, skills as cmd, tools as tool_cmd};
 use app_lib::core::{
-    app_state, audit_log::AuditDraft, central_repo, device_executor, devices, error::AppError,
+    app_state, audit_log::AuditDraft, central_repo, device_executor, device_inventory, devices, error::AppError,
     git_backup, git_fetcher, installer, library_layers, merge, repo_lock::RepoLock,
     scenario_service, skill_metadata, skill_store::SkillStore, skillssh_api, sync_engine,
     sync_metadata, tool_adapters, tool_service, well_known,
@@ -717,6 +717,14 @@ fn main() {
 }
 
 fn run(cli: Cli) -> anyhow::Result<()> {
+    // Inventory is deliberately handled before initializing the database or
+    // reindexing skills. It cannot publish or execute remote instructions.
+    if let Commands::Devices(DevicesArgs { command: DevicesCommand::Inventory { agent_dir, allowed_roots } }) = &cli.command {
+        if cli.skills_root.is_some() { bail!("inventory cannot be combined with --skills-root"); }
+        let report = device_inventory::inspect(agent_dir, allowed_roots);
+        print_json(&report, cli.json);
+        return Ok(());
+    }
     if let Commands::Repo(RepoArgs {
         command: command @ (RepoCommand::SetPath { .. } | RepoCommand::ResetPath),
     }) = &cli.command
@@ -764,6 +772,15 @@ struct DevicesArgs {
 
 #[derive(Subcommand, Debug)]
 enum DevicesCommand {
+    /// Inspect one local agent directory without executing or publishing anything.
+    Inventory {
+        /// Agent skill directory to inspect.
+        #[arg(long)]
+        agent_dir: PathBuf,
+        /// Explicitly approved roots for directory links; repeat as needed.
+        #[arg(long = "allowed-root")]
+        allowed_roots: Vec<PathBuf>,
+    },
     /// Print this machine's device identity (id, name and channel settings).
     Whoami,
     /// One-shot device executor: pull instructions from the control channel,
@@ -801,6 +818,7 @@ struct DevicesWhoami {
 
 fn run_devices(args: DevicesArgs, store: &SkillStore, json: bool) -> anyhow::Result<()> {
     match args.command {
+        DevicesCommand::Inventory { .. } => unreachable!("handled before the store is opened"),
         DevicesCommand::Whoami => {
             let report = DevicesWhoami {
                 device_id: devices::local_device_id(store)?,
