@@ -353,6 +353,22 @@ fn make_receipt(
     }
 }
 
+/// Treat Windows junctions and reparse points as links even when their file
+/// type is reported as a directory or regular file.
+fn is_inventory_link(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        metadata.file_type().is_symlink()
+            || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
+}
+
 /// A scan must be complete before it may replace the last published report.
 /// Refusing an uninspectable entry is conservative: treating it as absent
 /// would make a remote device appear to have lost deployed skills.
@@ -362,12 +378,14 @@ fn scan_agent_skills(agent_root: &Path) -> Result<Vec<AgentSkillReport>> {
     for entry in entries {
         let entry = entry.context("agent entry is unavailable")?;
         let name = entry.file_name().into_string().map_err(|_| anyhow::anyhow!("agent entry name is not UTF-8"))?;
-        let ty = entry.file_type().context("agent entry type is unavailable")?;
+        let entry_meta = std::fs::symlink_metadata(entry.path())
+            .context("agent entry metadata is unavailable")?;
+        let ty = entry_meta.file_type();
         // Existing versions silently omitted linked skill directories. Until
         // an explicit trusted-root policy is configured, keep the old report
         // instead of publishing a confidently wrong inventory.
-        if ty.is_symlink() {
-            bail!("agent entry {name:?} is a symbolic link; inventory incomplete");
+        if is_inventory_link(&entry_meta) {
+            bail!("agent entry {name:?} is a symbolic link or reparse point; inventory incomplete");
         }
         if !ty.is_dir() { continue; }
         let skill_md = entry.path().join("SKILL.md");
@@ -376,7 +394,7 @@ fn scan_agent_skills(agent_root: &Path) -> Result<Vec<AgentSkillReport>> {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
             Err(err) => return Err(err).context("SKILL.md cannot be inspected"),
         };
-        if meta.file_type().is_symlink() {
+        if is_inventory_link(&meta) {
             bail!("agent entry {name:?} has a linked SKILL.md; inventory incomplete");
         }
         if !meta.file_type().is_file() { continue; }
@@ -653,6 +671,19 @@ mod tests {
         std::fs::create_dir_all(&skill).unwrap();
         std::fs::write(skill.join("SKILL.md"), b"example").unwrap();
         std::os::unix::fs::symlink(&skill, agent.join("linked")).unwrap();
+        assert!(scan_agent_skills(&agent).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn inventory_refuses_windows_junctions_instead_of_reading_foreign_tree() {
+        let temp = tempfile::tempdir().unwrap();
+        let agent = temp.path().join("agent");
+        let foreign = temp.path().join("foreign");
+        std::fs::create_dir_all(&agent).unwrap();
+        std::fs::create_dir_all(&foreign).unwrap();
+        std::fs::write(foreign.join("SKILL.md"), b"fixture").unwrap();
+        junction::create(&foreign, agent.join("linked")).unwrap();
         assert!(scan_agent_skills(&agent).is_err());
     }
 
