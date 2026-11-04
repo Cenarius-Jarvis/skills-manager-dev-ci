@@ -167,3 +167,19 @@ Settings keys: `device_channel_url` (encrypted like other sensitive keys),
   configured with, within their TTL, for allow-listed agents only.
 - The executor never runs content from the channel as code; skills are data
   directories copied into agent skill folders.
+
+
+## Local read-only inventory (experimental)
+
+`skills-manager-cli --json devices inventory --agent-dir <path> --allowed-root <path>`
+
+This separate command reports names found in one explicitly selected local
+agent directory. It does not open or reindex the Skills Manager database,
+fetch or publish the control channel, read skill file contents, or execute
+instructions. It is a diagnostic primitive, not a complete library inventory
+or a replacement for device-reported state. Directory symlinks are included
+only if their canonical targets lie inside an explicitly allowed root;
+repeat `--allowed-root` for multiple approved roots. Skipped, broken or
+unreadable entries make `complete` false and produce warnings. An empty
+skill list is not proof of an empty device when `complete` is false. No
+inventory data leaves the device as a result of this command.
