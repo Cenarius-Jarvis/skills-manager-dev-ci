@@ -1,4 +1,18 @@
 {
+  "localInventory": {
+    "title": "本机只读清单测试",
+    "hint": "只检查指定的本机目录，不连接远端或执行部署。",
+    "path": "Agent 技能目录",
+    "allowed": "允许的符号链接目标根目录（可选）",
+    "run": "检查清单",
+    "loading": "正在检查…",
+    "complete": "检查完成",
+    "incomplete": "结果不完整，请查看提示",
+    "failed": "检查失败",
+    "link": "目录链接",
+    "directory": "普通目录",
+    "empty": "没有发现技能。"
+  },
   "app": {
     "name": "Skills Manager"
   },
