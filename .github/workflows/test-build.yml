@@ -65,7 +65,7 @@ jobs:
         shell: bash
         run: |
           npm ci
-          npx tauri build --bundles nsis --config '{"version":"1.43.3-dev.2","bundle":{"createUpdaterArtifacts":false}}'
+          npx tauri build --bundles nsis --config '{"version":"1.43.3-dev.3","bundle":{"createUpdaterArtifacts":false}}'
 
       - name: Upload app bundle artifact
         if: runner.os == 'Windows'
