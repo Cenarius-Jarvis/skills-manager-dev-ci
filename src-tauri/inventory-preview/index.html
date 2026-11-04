@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Skills Manager · 只读清单测试</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <p class="eyebrow">SKILLS MANAGER · 预览</p>
+      <h1>本机技能清单测试</h1>
+      <p class="sub">使用测试目录验证读取功能。此独立程序只检查本机指定目录，不连接远端、不部署技能。</p>
+    </header>
+    <section class="card" aria-labelledby="form-title">
+      <h2 id="form-title">选择要检查的目录</h2>
+      <form id="inspect-form">
+        <label for="agent-dir">Agent 技能目录 <span>必填</span></label>
+        <input id="agent-dir" type="text" required placeholder="例如：C:\\test-skills\\agent" autocomplete="off">
+        <p class="hint">建议先使用自己创建的空测试目录或模拟技能目录。</p>
+        <label for="allowed-root">允许的符号链接目标根目录 <span>可选</span></label>
+        <input id="allowed-root" type="text" placeholder="例如：C:\\test-skills\\library" autocomplete="off">
+        <p class="hint">仅检查指向此根目录的目录链接。未设置时，链接将跳过并提示。</p>
+        <button id="submit" type="submit">检查清单</button>
+      </form>
+    </section>
+    <section class="card results" aria-labelledby="results-title">
+      <div class="result-header"><h2 id="results-title">检查结果</h2><span id="count" class="badge">尚未检查</span></div>
+      <p id="status" role="status" aria-live="polite">输入测试目录后开始检查。</p>
+      <div id="warnings" role="alert"></div>
+      <ul id="skills" aria-label="技能列表"></ul>
+    </section>
+  </main>
+  <script src="main.js" defer></script>
+</body>
+</html>
