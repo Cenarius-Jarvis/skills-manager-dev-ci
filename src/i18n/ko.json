@@ -1,4 +1,18 @@
 {
+  "localInventory": {
+    "title": "로컬 읽기 전용 목록 테스트",
+    "hint": "지정한 로컬 디렉터리만 확인하며 원격 연결이나 배포를 하지 않습니다.",
+    "path": "에이전트 스킬 디렉터리",
+    "allowed": "허용된 심볼릭 링크 대상 루트 (선택)",
+    "run": "목록 확인",
+    "loading": "확인 중…",
+    "complete": "확인 완료",
+    "incomplete": "결과가 불완전합니다. 경고를 확인하세요",
+    "failed": "확인 실패",
+    "link": "디렉터리 링크",
+    "directory": "디렉터리",
+    "empty": "스킬을 찾지 못했습니다."
+  },
   "app": {
     "name": "Skills Manager"
   },
