@@ -1,0 +1,25 @@
+name: Device inventory check
+on:
+  push:
+    branches: [codex/device-inventory-readonly]
+    paths:
+      - 'src-tauri/src/core/device_inventory.rs'
+      - 'src-tauri/src/core/mod.rs'
+      - 'src-tauri/src/bin/skills-manager-cli.rs'
+      - '.github/workflows/device-inventory-check.yml'
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: src-tauri
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: Run inventory tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml device_inventory
