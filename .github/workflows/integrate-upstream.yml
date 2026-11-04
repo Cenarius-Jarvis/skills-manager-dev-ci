@@ -1,0 +1,36 @@
+name: Integrate pinned upstream release
+on:
+  push:
+    branches: [codex/upstream-refresh]
+    paths: ['.github/workflows/integrate-upstream.yml']
+permissions:
+  contents: write
+jobs:
+  integrate:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+      - name: Fetch pinned official v1.43.3 and integrate on a new branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          upstream_commit=d30530c0ce473bc7c74fdb5952ebc08f2097eff2
+          output_ref=refs/heads/codex/integration-v1.43.3
+          if git ls-remote --exit-code --heads origin "$output_ref" >/dev/null 2>&1; then
+            echo "Output branch already exists; refusing to change it"
+            exit 1
+          fi
+          git fetch --no-tags https://github.com/xingkongliang/skills-manager.git "$upstream_commit"
+          test "$(git rev-parse FETCH_HEAD)" = "$upstream_commit"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          previous_head="$(git rev-parse HEAD)"
+          git merge --no-ff --no-edit "$upstream_commit"
+          git merge-base --is-ancestor "$upstream_commit" HEAD
+          git merge-base --is-ancestor "$previous_head" HEAD
+          node -e 'if (require("./package.json").version !== "1.43.3") process.exit(1)'
+          git push origin "HEAD:$output_ref"
+          echo "Created $output_ref after merging official v1.43.3."
