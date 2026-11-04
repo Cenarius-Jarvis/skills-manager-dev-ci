@@ -3465,6 +3465,52 @@ mod tests {
         assert!(err.to_string().contains("--dry-run requires an explicit --device-id"));
     }
 
+
+    #[test]
+    fn executor_dry_run_with_valid_id_leaves_store_unopened() {
+        let temp = tempdir().unwrap();
+        let base = temp.path().join("absent-app-state");
+        let remote = temp.path().join("channel.git");
+        let output = std::process::Command::new("git")
+            .args(["init", "--bare"]).arg(&remote).output().unwrap();
+        assert!(output.status.success());
+        let remote_str = remote.to_string_lossy().to_string();
+        let now = chrono::Utc::now().timestamp();
+        let inst = devices::DeviceInstruction {
+            schema: devices::DEVICE_PROTOCOL_VERSION,
+            id: "inst-cli-dry".to_string(),
+            device_id: "dev-test".to_string(),
+            action: devices::ACTION_DEPLOY.to_string(),
+            skill_url: Some("https://example.com/skills.git".to_string()),
+            skill_branch: None, skill_subpath: None,
+            skill_name: Some("demo".to_string()),
+            agent_key: "codex".to_string(),
+            created_at: now, expires_at: Some(now + 600), created_by: None,
+        };
+        devices::publish_instructions(&remote_str, "devices-test", None, &[inst]).unwrap();
+        let refs_before = std::process::Command::new("git").arg("--git-dir").arg(&remote).arg("show-ref").output().unwrap().stdout;
+        let agent = temp.path().join("agent");
+        fs::create_dir_all(&agent).unwrap();
+        let agent_spec = format!("codex={}", agent.display());
+        // This override is in-memory only; the chosen base must remain absent.
+        central_repo::set_runtime_base_dir_override(Some(base.clone()));
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) { central_repo::set_runtime_base_dir_override(None); }
+        }
+        let _reset = Reset;
+        let cli = Cli::try_parse_from([
+            "skills-manager-cli", "devices", "run-once", "--url", &remote_str,
+            "--branch", "devices-test", "--device-id", "dev-test",
+            "--agent", &agent_spec, "--dry-run",
+        ]).unwrap();
+        run(cli).unwrap();
+        assert!(!base.exists(), "CLI dry-run must not initialize the store");
+        assert_eq!(fs::read_dir(&agent).unwrap().count(), 0);
+        let refs_after = std::process::Command::new("git").arg("--git-dir").arg(&remote).arg("show-ref").output().unwrap().stdout;
+        assert_eq!(refs_before, refs_after);
+    }
+
     #[test]
     fn agents_add_custom_registers_the_agent_and_rejects_a_duplicate() {
         let tmp = tempdir().unwrap();
