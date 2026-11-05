@@ -22,7 +22,7 @@ jobs:
       - name: Install Linux runner libraries
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-      - name: Test fail-closed recovery using temporary fixtures
+      - name: Test atomic recovery observations with temporary fixtures
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib remote_auth_prototype -- --test-threads=1
       - name: Test native deployment fixture
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib native_deploy -- --test-threads=1
