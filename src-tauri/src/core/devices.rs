@@ -1027,7 +1027,8 @@ pub fn fetch_channel_snapshot(url: &str, branch: &str) -> Result<ChannelSnapshot
         Err(err) => return Err(err).context("device channel directory is unavailable"),
     };
 
-    for entry in device_entries.flatten() {
+    for entry in device_entries {
+        let entry = entry.context("device channel entry is unavailable")?;
         let device_id = entry.file_name().to_string_lossy().to_string();
         if device_id.starts_with('.') {
             continue;
@@ -1722,4 +1723,126 @@ mod tests {
         let rows = store.get_device_instructions(None).unwrap();
         assert_eq!(rows[0].state, TASK_STATE_FAILED, "impersonated receipt must not flip state");
     }
+    fn fixture_library(device_id: &str, timestamp: i64, names: &[&str]) -> LibraryReport {
+        LibraryReport {
+            schema: LIBRARY_REPORT_VERSION, device_id: device_id.into(), reported_at: timestamp,
+            complete: true,
+            skills: names.iter().enumerate().map(|(i, name)| LibrarySkillReport {
+                id: format!("skill-{i}"), name: (*name).into(), enabled: true,
+            }).collect(),
+        }
+    }
+
+    #[test]
+    fn device_library_report_uses_only_minimal_registered_metadata() {
+        use crate::core::skill_store::SkillRecord;
+        let temp = tempfile::tempdir().unwrap();
+        let store = SkillStore::new(&temp.path().join("store.db")).unwrap();
+        store.insert_skill(&SkillRecord {
+            id: "sample-id".into(), name: "not-deployed".into(), description: Some("private-description".into()),
+            source_type: "git".into(), source_ref: Some("private-source-url".into()),
+            source_ref_resolved: None, source_subpath: None, source_branch: None,
+            source_revision: None, remote_revision: None, central_path: "private-local-path".into(),
+            content_hash: Some("private-hash".into()), enabled: true, created_at: 1, updated_at: 1,
+            status: "installed".into(), update_status: "unknown".into(),
+            last_checked_at: None, last_check_error: Some("private-error".into()),
+        }).unwrap();
+        let report = library_report_from_store(&store, "dev-test", 100).unwrap();
+        assert_eq!(report.skills.len(), 1);
+        assert_eq!(report.skills[0].name, "not-deployed");
+        let json = serde_json::to_string(&report).unwrap();
+        for secret in ["private-description", "private-source-url", "private-local-path", "private-hash", "private-error"] {
+            assert!(!json.contains(secret));
+        }
+        assert!(store.get_device_skill_records(None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn device_library_report_preserves_last_good_for_missing_invalid_incomplete_and_older() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = SkillStore::new(&temp.path().join("store.db")).unwrap();
+        let good = fixture_library("dev-test", 20, &["undistributed"]);
+        import_library_observation(&store, "dev-test", &LibraryObservation::Complete(good)).unwrap();
+        for (observation, state) in [
+            (LibraryObservation::Missing, "missing"),
+            (LibraryObservation::Invalid, "invalid"),
+            (LibraryObservation::Incomplete, "incomplete"),
+            (LibraryObservation::Complete(fixture_library("dev-test", 10, &[])), "older"),
+        ] {
+            import_library_observation(&store, "dev-test", &observation).unwrap();
+            let view = library_view(&store, "dev-test").unwrap();
+            assert_eq!(view.state, state);
+            assert_eq!(view.reported_at, Some(20));
+            assert_eq!(view.skills[0].name, "undistributed");
+        }
+        import_library_observation(&store, "dev-test",
+            &LibraryObservation::Complete(fixture_library("dev-test", 30, &[]))).unwrap();
+        let view = library_view(&store, "dev-test").unwrap();
+        assert_eq!(view.state, "complete");
+        assert_eq!(view.reported_at, Some(30));
+        assert!(view.skills.is_empty(), "a complete empty report is authoritative");
+        assert_eq!(library_view(&store, "dev-other").unwrap().state, "missing");
+    }
+
+    #[test]
+    fn device_library_report_rejects_bad_identity_unknown_fields_and_oversized_input() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("library-v1.json");
+        let report = fixture_library("dev-one", 100, &["one"]);
+        std::fs::write(&path, serde_json::to_vec(&report).unwrap()).unwrap();
+        assert!(matches!(observe_library(&path, "dev-one"), LibraryObservation::Complete(_)));
+        assert!(matches!(observe_library(&path, "dev-two"), LibraryObservation::Invalid));
+        let mut incomplete = report.clone(); incomplete.complete = false;
+        std::fs::write(&path, serde_json::to_vec(&incomplete).unwrap()).unwrap();
+        assert!(matches!(observe_library(&path, "dev-one"), LibraryObservation::Incomplete));
+        let mut value = serde_json::to_value(&report).unwrap();
+        value["source_url"] = serde_json::json!("secret");
+        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(matches!(observe_library(&path, "dev-one"), LibraryObservation::Invalid));
+        std::fs::write(&path, vec![b'x'; LIBRARY_MAX_BYTES as usize + 1]).unwrap();
+        assert!(matches!(observe_library(&path, "dev-one"), LibraryObservation::Invalid));
+    }
+
+    #[test]
+    fn device_library_report_two_devices_roundtrip_over_local_git_channel() {
+        let temp = tempfile::tempdir().unwrap();
+        let remote = temp.path().join("fake-channel.git");
+        assert!(std::process::Command::new("git").args(["init", "--bare"]).arg(&remote).output().unwrap().status.success());
+        let url = remote.to_string_lossy().to_string();
+        let first = fixture_library("dev-main", 100, &["local-only"]);
+        let second = fixture_library("dev-remote", 101, &["remote-only", "not-deployed"]);
+        publish_library_report(&url, "test-channel", &first).unwrap();
+        publish_library_report(&url, "test-channel", &second).unwrap();
+        let legacy_state = DeviceStateReport {
+            schema: DEVICE_PROTOCOL_VERSION, device_id: "dev-remote".into(), reported_at: 102,
+            executing: vec![], agents: vec![AgentStateReport {
+                key: "codex".into(), skills: vec![AgentSkillReport {
+                    name: "remote-only".into(), content_hash: None, deployed_at: None,
+                }],
+            }],
+        };
+        publish_state_report(&url, "test-channel", &legacy_state).unwrap();
+        let old_json = serde_json::to_vec(&legacy_state).unwrap();
+        assert!(serde_json::from_slice::<DeviceStateReport>(&old_json).is_ok());
+        assert!(!String::from_utf8(old_json).unwrap().contains("library"));
+        let snapshot = fetch_channel_snapshot(&url, "test-channel").unwrap();
+        let store = SkillStore::new(&temp.path().join("projected.db")).unwrap();
+        import_snapshot(&store, &snapshot).unwrap();
+        let remote_lib = library_view(&store, "dev-remote").unwrap();
+        assert_eq!(remote_lib.skills.len(), 2);
+        assert!(remote_lib.skills.iter().any(|s| s.name == "not-deployed"));
+        assert_eq!(store.get_device_skill_records(Some("dev-remote")).unwrap().len(), 1);
+        assert_eq!(library_view(&store, "dev-main").unwrap().skills[0].name, "local-only");
+
+        let (_tmp, work) = prepare_working_copy(&url, "test-channel").unwrap();
+        std::fs::remove_file(work.join("devices/dev-remote/library-v1.json")).unwrap();
+        commit_and_push(&work, &url, "test-channel", "test", "remove fixture report").unwrap();
+        let absent = fetch_channel_snapshot(&url, "test-channel").unwrap();
+        import_snapshot(&store, &absent).unwrap();
+        let after = library_view(&store, "dev-remote").unwrap();
+        assert_eq!(after.state, "missing");
+        assert_eq!(after.skills.len(), 2);
+        assert_eq!(after.reported_at, Some(101));
+    }
+
 }
