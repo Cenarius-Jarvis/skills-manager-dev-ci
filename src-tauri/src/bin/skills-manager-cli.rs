@@ -781,6 +781,19 @@ enum DevicesCommand {
         #[arg(long = "allowed-root")]
         allowed_roots: Vec<PathBuf>,
     },
+    /// Publish a minimal registered-library inventory, without running the executor.
+    /// Review the destination and skill names before using a real channel.
+    ReportLibrary {
+        /// Explicitly selected private device channel remote.
+        #[arg(long)]
+        url: String,
+        /// Control channel branch.
+        #[arg(long)]
+        branch: Option<String>,
+        /// Explicit device ID; this command does not generate one.
+        #[arg(long)]
+        device_id: String,
+    },
     /// Print this machine's device identity (id, name and channel settings).
     Whoami,
     /// One-shot device executor: pull instructions from the control channel,
@@ -799,6 +812,10 @@ enum DevicesCommand {
         /// Agent allow-list and target directory, repeatable: --agent key=dir.
         #[arg(long = "agent")]
         agents: Vec<String>,
+        /// Approved roots for linked inventory directories; repeat as needed.
+        /// Applies only to read-only reporting, never to deployment authority.
+        #[arg(long = "allowed-root")]
+        inventory_allowed_roots: Vec<PathBuf>,
         /// Maximum instructions considered per run.
         #[arg(long, default_value_t = 10)]
         max_instructions: usize,
@@ -819,6 +836,13 @@ struct DevicesWhoami {
 fn run_devices(args: DevicesArgs, store: &SkillStore, json: bool) -> anyhow::Result<()> {
     match args.command {
         DevicesCommand::Inventory { .. } => unreachable!("handled before the store is opened"),
+        DevicesCommand::ReportLibrary { url, branch, device_id } => {
+            let report = devices::library_report_from_store(store, &device_id, chrono::Utc::now().timestamp())?;
+            let branch = branch.as_deref().unwrap_or(devices::DEFAULT_CHANNEL_BRANCH);
+            devices::publish_library_report(&url, branch, &report)?;
+            print_json(&report, json);
+            Ok(())
+        }
         DevicesCommand::Whoami => {
             let report = DevicesWhoami {
                 device_id: devices::local_device_id(store)?,
@@ -834,6 +858,7 @@ fn run_devices(args: DevicesArgs, store: &SkillStore, json: bool) -> anyhow::Res
             branch,
             device_id,
             agents,
+            inventory_allowed_roots,
             max_instructions,
             dry_run,
         } => {
@@ -856,6 +881,7 @@ fn run_devices(args: DevicesArgs, store: &SkillStore, json: bool) -> anyhow::Res
                     None => devices::local_device_id(store)?,
                 },
                 agents: mappings,
+                inventory_allowed_roots,
                 max_instructions,
                 dry_run,
             };
@@ -3424,6 +3450,21 @@ mod tests {
     use app_lib::core::tool_adapters::{CustomToolDef, ToolCategory};
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn inventory_run_once_cli_accepts_repeated_explicit_roots() {
+        let parsed = Cli::try_parse_from([
+            "skills-manager-cli", "devices", "run-once", "--url", "fixture.git",
+            "--agent", "codex=agent", "--allowed-root", "library-one",
+            "--allowed-root", "library-two",
+        ]).unwrap();
+        match parsed.command {
+            Commands::Devices(DevicesArgs {
+                command: DevicesCommand::RunOnce { inventory_allowed_roots, .. }
+            }) => assert_eq!(inventory_allowed_roots, vec![PathBuf::from("library-one"), PathBuf::from("library-two")]),
+            other => panic!("unexpected command {other:?}"),
+        }
+    }
 
     #[test]
     fn agents_add_custom_registers_the_agent_and_rejects_a_duplicate() {
