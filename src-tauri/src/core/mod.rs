@@ -44,3 +44,6 @@ pub mod well_known;
 
 #[cfg(test)]
 mod remote_auth_prototype;
+
+#[cfg(test)]
+mod native_managed_executor;
