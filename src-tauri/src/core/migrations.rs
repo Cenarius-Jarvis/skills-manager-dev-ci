@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 
 /// Current schema version. Bump this when adding a new migration.
-const LATEST_VERSION: u32 = 10;
+const LATEST_VERSION: u32 = 11;
 
 /// Run all pending migrations on the database.
 ///
@@ -57,6 +57,7 @@ fn migrate_step(conn: &Connection, from_version: u32) -> Result<()> {
         7 => migrate_v7_to_v8(conn),
         8 => migrate_v8_to_v9(conn),
         9 => migrate_v9_to_v10(conn),
+        10 => migrate_v10_to_v11(conn),
         _ => bail!("unknown migration version: {from_version}"),
     }
 }
@@ -403,6 +404,31 @@ fn migrate_v9_to_v10(conn: &Connection) -> Result<()> {
             receipt_detail TEXT,
             receipt_at INTEGER,
             executor_version TEXT
+        );
+        ",
+    )?;
+    Ok(())
+}
+
+/// Independent Git library sources and their last verified snapshots.
+/// Deleting a source only deletes its configuration/cache, never remote data.
+fn migrate_v10_to_v11(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS repository_sources (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            device_id TEXT,
+            encrypted_url TEXT NOT NULL,
+            branch TEXT NOT NULL,
+            skills_root TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS repository_source_snapshots (
+            source_id TEXT PRIMARY KEY REFERENCES repository_sources(id) ON DELETE CASCADE,
+            head_commit TEXT NOT NULL,
+            fetched_at INTEGER NOT NULL,
+            skills_json TEXT NOT NULL
         );
         ",
     )?;
