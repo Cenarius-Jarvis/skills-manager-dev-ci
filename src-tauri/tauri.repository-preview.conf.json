@@ -1,0 +1,27 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Skills Repository Readonly Preview",
+  "version": "0.1.0",
+  "identifier": "dev.skillsmanager.repositoryreadonlypreview",
+  "build": {
+    "frontendDist": "repository-preview-dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Skills Manager · 双仓库只读预览",
+        "width": 1100,
+        "height": 760,
+        "minWidth": 680,
+        "minHeight": 520
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": false
+  }
+}
