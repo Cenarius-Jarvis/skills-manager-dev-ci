@@ -725,6 +725,33 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         print_json(&report, cli.json);
         return Ok(());
     }
+    // A preview cannot open the regular store: initialization may create or
+    // migrate files, and an implicit identity could be persisted. Require an
+    // explicit id and enter the read-only executor path before opening it.
+    if let Commands::Devices(DevicesArgs {
+        command: DevicesCommand::RunOnce {
+            url, branch, device_id, agents, max_instructions, dry_run: true
+        }
+    }) = &cli.command {
+        if cli.skills_root.is_some() {
+            bail!("devices run-once --dry-run cannot be combined with --skills-root");
+        }
+        let id = device_id.as_ref().ok_or_else(|| anyhow!(
+            "devices run-once --dry-run requires an explicit --device-id"
+        ))?;
+        devices::validate_device_id(id)?;
+        let config = device_executor::ExecutorConfig {
+            url: url.clone(),
+            branch: branch.clone().unwrap_or_else(|| devices::DEFAULT_CHANNEL_BRANCH.to_string()),
+            device_id: id.clone(),
+            agents: parse_executor_agents(agents)?,
+            max_instructions: *max_instructions,
+            dry_run: true,
+        };
+        let report = device_executor::run_once(&config)?;
+        print_json(&report, cli.json);
+        return Ok(());
+    }
     if let Commands::Repo(RepoArgs {
         command: command @ (RepoCommand::SetPath { .. } | RepoCommand::ResetPath),
     }) = &cli.command
@@ -802,7 +829,8 @@ enum DevicesCommand {
         /// Maximum instructions considered per run.
         #[arg(long, default_value_t = 10)]
         max_instructions: usize,
-        /// Show what would happen without touching anything.
+        /// Preview without modifying the store, agents or channel. Requires
+        /// --device-id; skill sources are not fetched, so results are preliminary.
         #[arg(long)]
         dry_run: bool,
     },
@@ -814,6 +842,18 @@ struct DevicesWhoami {
     device_name: String,
     channel_url: Option<String>,
     channel_branch: String,
+}
+
+fn parse_executor_agents(specs: &[String]) -> anyhow::Result<Vec<device_executor::AgentMapping>> {
+    let mut mappings = Vec::new();
+    for spec in specs {
+        let (key, dir) = spec.split_once('=').ok_or_else(|| anyhow!(
+            "--agent expects key=dir, got {spec:?}"
+        ))?;
+        devices::validate_agent_key(key)?;
+        mappings.push(device_executor::AgentMapping { key: key.to_string(), dir: PathBuf::from(dir) });
+    }
+    Ok(mappings)
 }
 
 fn run_devices(args: DevicesArgs, store: &SkillStore, json: bool) -> anyhow::Result<()> {
@@ -837,17 +877,7 @@ fn run_devices(args: DevicesArgs, store: &SkillStore, json: bool) -> anyhow::Res
             max_instructions,
             dry_run,
         } => {
-            let mut mappings = Vec::new();
-            for spec in &agents {
-                let (key, dir) = spec.split_once('=').ok_or_else(|| {
-                    anyhow!("--agent expects key=dir, got {spec:?}")
-                })?;
-                devices::validate_agent_key(key)?;
-                mappings.push(device_executor::AgentMapping {
-                    key: key.to_string(),
-                    dir: PathBuf::from(dir),
-                });
-            }
+            let mappings = parse_executor_agents(&agents)?;
             let config = device_executor::ExecutorConfig {
                 url,
                 branch: branch.unwrap_or_else(|| devices::DEFAULT_CHANNEL_BRANCH.to_string()),
@@ -871,7 +901,7 @@ fn run_devices(args: DevicesArgs, store: &SkillStore, json: bool) -> anyhow::Res
                 // Benign scheduler overlap: another run is already active.
                 return Ok(());
             }
-            if !published {
+            if !published && !config.dry_run {
                 bail!(
                     "executor results could not be published: {}",
                     publish_error.unwrap_or_else(|| "unknown error".to_string())
@@ -3424,6 +3454,62 @@ mod tests {
     use app_lib::core::tool_adapters::{CustomToolDef, ToolCategory};
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn executor_dry_run_requires_explicit_identity_before_store_initialization() {
+        let cli = Cli::try_parse_from([
+            "skills-manager-cli", "devices", "run-once",
+            "--url", "/unused", "--dry-run",
+        ]).unwrap();
+        let err = run(cli).unwrap_err();
+        assert!(err.to_string().contains("--dry-run requires an explicit --device-id"));
+    }
+
+
+    #[test]
+    fn executor_dry_run_with_valid_id_leaves_store_unopened() {
+        let temp = tempdir().unwrap();
+        let base = temp.path().join("absent-app-state");
+        let remote = temp.path().join("channel.git");
+        let output = std::process::Command::new("git")
+            .args(["init", "--bare"]).arg(&remote).output().unwrap();
+        assert!(output.status.success());
+        let remote_str = remote.to_string_lossy().to_string();
+        let now = chrono::Utc::now().timestamp();
+        let inst = devices::DeviceInstruction {
+            schema: devices::DEVICE_PROTOCOL_VERSION,
+            id: "inst-cli-dry".to_string(),
+            device_id: "dev-test".to_string(),
+            action: devices::ACTION_DEPLOY.to_string(),
+            skill_url: Some("https://example.com/skills.git".to_string()),
+            skill_branch: None, skill_subpath: None,
+            skill_name: Some("demo".to_string()),
+            agent_key: "codex".to_string(),
+            created_at: now, expires_at: Some(now + 600), created_by: None,
+        };
+        devices::publish_instructions(&remote_str, "devices-test", None, &[inst]).unwrap();
+        let refs_before = std::process::Command::new("git").arg("--git-dir").arg(&remote).arg("show-ref").output().unwrap().stdout;
+        let agent = temp.path().join("agent");
+        fs::create_dir_all(&agent).unwrap();
+        let agent_spec = format!("codex={}", agent.display());
+        // This override is in-memory only; the chosen base must remain absent.
+        central_repo::set_runtime_base_dir_override(Some(base.clone()));
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) { central_repo::set_runtime_base_dir_override(None); }
+        }
+        let _reset = Reset;
+        let cli = Cli::try_parse_from([
+            "skills-manager-cli", "devices", "run-once", "--url", &remote_str,
+            "--branch", "devices-test", "--device-id", "dev-test",
+            "--agent", &agent_spec, "--dry-run",
+        ]).unwrap();
+        run(cli).unwrap();
+        assert!(!base.exists(), "CLI dry-run must not initialize the store");
+        assert_eq!(fs::read_dir(&agent).unwrap().count(), 0);
+        let refs_after = std::process::Command::new("git").arg("--git-dir").arg(&remote).arg("show-ref").output().unwrap().stdout;
+        assert_eq!(refs_before, refs_after);
+    }
 
     #[test]
     fn agents_add_custom_registers_the_agent_and_rejects_a_duplicate() {
