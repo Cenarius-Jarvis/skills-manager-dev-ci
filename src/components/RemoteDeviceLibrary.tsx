@@ -19,12 +19,14 @@ export function RemoteDeviceLibrary({
   instructions,
   loading,
   error,
+  snapshotWarnings,
   onRefresh,
 }: {
   device: DeviceWithStatus;
   instructions: DeviceInstructionRow[];
   loading: boolean;
   error?: string | null;
+  snapshotWarnings?: string[] | null;
   onRefresh: () => void;
 }) {
   const { t, i18n } = useTranslation();
@@ -59,6 +61,18 @@ export function RemoteDeviceLibrary({
         </div>
       )}
 
+      <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-[13px] text-amber-700 dark:text-amber-300"
+        role={snapshotWarnings?.length ? "alert" : "status"} data-testid="remote-snapshot-notice">
+        <p>{t("devices.cachedProjectionNotice")}</p>
+        {snapshotWarnings == null ? <p className="mt-1">{t("devices.channelNotChecked")}</p> :
+          snapshotWarnings.length > 0 ? <>
+            <p className="mt-1 font-medium">{t("devices.channelIncomplete")}</p>
+            <ul className="mt-1 list-inside list-disc">
+              {snapshotWarnings.map((warning, index) => <li key={index}>{warning}</li>)}
+            </ul>
+          </> : <p className="mt-1">{t("devices.channelNoWarnings")}</p>}
+      </div>
+
       <div className="app-panel p-4" data-testid={`remote-device-${device.id}`}>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <span className="inline-flex items-center gap-1.5 text-[14px] font-medium">
@@ -86,7 +100,7 @@ export function RemoteDeviceLibrary({
 
         {device.skill_records.length === 0 ? (
           <p className="mt-3 text-[13px] text-muted" data-testid="remote-no-skills">
-            {t("devices.noSkillRecords")}
+            {t("devices.currentNoSkillRecords")}
           </p>
         ) : (
           <div className="mt-3 flex flex-col gap-2">
