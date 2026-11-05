@@ -61,3 +61,8 @@ junction = "2"
 
 [features]
 isolated-repo-preview = []
+
+[[bin]]
+name = "repository-readonly-preview"
+path = "src/bin/repository-readonly-preview.rs"
+required-features = ["isolated-repo-preview"]
