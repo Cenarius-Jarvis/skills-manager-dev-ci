@@ -1236,5 +1236,24 @@
     "remoteHint": "Dispositivo remoto",
     "manage": "Administrar dispositivos…",
     "remoteTag": "Remoto"
+  },
+  "repositorySources": {
+    "title": "Repositorios Git independientes",
+    "hint": "Lee el contenido confirmado de la rama indicada de cada repositorio. No incluye cambios sin confirmar. La lectura no publica ni despliega.",
+    "name": "Nombre de fuente",
+    "device": "Dispositivo (opcional)",
+    "unassigned": "Sin asignar",
+    "url": "Dirección HTTPS o SSH (sin credenciales)",
+    "branch": "Rama",
+    "root": "Raíz de habilidades (opcional)",
+    "add": "Añadir fuente",
+    "empty": "No se han añadido fuentes de repositorio.",
+    "working": "Procesando…",
+    "refresh": "Actualizar lista",
+    "remove": "Quitar configuración",
+    "refreshFailed": "Falló la actualización; se conserva la última lista correcta.",
+    "commit": "Commit",
+    "noSkills": "Este commit no contiene habilidades.",
+    "notFetched": "Aún no hay una lista obtenida correctamente."
   }
 }
