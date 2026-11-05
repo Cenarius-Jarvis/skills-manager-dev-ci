@@ -230,6 +230,33 @@ mod tests {
     }
 
     #[test]
+    fn remote_auth_prototype_root_revocation_invalidates_pending_claim() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut conn = open_fixture(&temp.path().join("commands.db"));
+        let (cmd, trust, signer) = fixture();
+        initialize_pairing(&conn, &cmd, &trust);
+        let signature = signer.sign(&canonical(&cmd).unwrap());
+        paired_claim(&mut conn, &cmd, signature.as_ref(), "dev-fixture", 200).unwrap();
+        revoke_fixture_root(&mut conn, &cmd.device_id, &cmd.agent_key).unwrap();
+        let state: String = conn.query_row("SELECT state FROM fixture_command_claims WHERE command_id = ?1",
+            params![cmd.command_id], |row| row.get(0)).unwrap();
+        assert_eq!(state, "revoked_after_claim");
+    }
+
+    #[test]
+    fn remote_auth_prototype_untrusted_key_does_not_create_claim() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut conn = open_fixture(&temp.path().join("commands.db"));
+        let (mut cmd, trust, signer) = fixture();
+        initialize_pairing(&conn, &cmd, &trust);
+        cmd.key_id = "unregistered".into();
+        let signature = signer.sign(&canonical(&cmd).unwrap());
+        assert!(paired_claim(&mut conn, &cmd, signature.as_ref(), "dev-fixture", 200).is_err());
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM fixture_command_claims", [], |row| row.get(0)).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
     fn remote_auth_prototype_pairing_revoke_and_claim_serialize() {
         let temp = tempfile::tempdir().unwrap();
         let db = temp.path().join("commands.db");
