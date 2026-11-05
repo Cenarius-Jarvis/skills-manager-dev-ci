@@ -128,7 +128,9 @@ mod tests {
         conn.execute_batch("CREATE TABLE IF NOT EXISTS fixture_command_claims (
             command_id TEXT PRIMARY KEY, device_id TEXT NOT NULL,
             payload_hash TEXT NOT NULL, state TEXT NOT NULL
-                CHECK(state IN ('claimed', 'revoked_after_claim', 'consuming'))
+                CHECK(state IN ('claimed', 'revoked_after_claim', 'consuming', 'blocked_recovery'))
+        ); CREATE TABLE IF NOT EXISTS fixture_recovery_cases (
+            command_id TEXT PRIMARY KEY, classification TEXT NOT NULL
         ); CREATE TABLE IF NOT EXISTS fixture_trusted_keys (
             device_id TEXT NOT NULL, key_id TEXT NOT NULL,
             public_key BLOB NOT NULL CHECK(length(public_key) = 32),
@@ -208,6 +210,39 @@ mod tests {
         if changed != 1 { bail!("claim cannot begin"); }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Fixture-only recovery observation. Never follows or writes the target,
+    /// never restarts work, and only classifies what is visible at this instant.
+    fn block_interrupted_fixture(conn: &mut Connection, command_id: &str, approved_root: &std::path::Path) -> Result<String> {
+        fn is_link_or_reparse(meta: &std::fs::Metadata) -> bool {
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::MetadataExt;
+                meta.file_type().is_symlink() || meta.file_attributes() & 0x400 != 0
+            }
+            #[cfg(not(windows))]
+            { meta.file_type().is_symlink() }
+        }
+        let classification = match std::fs::symlink_metadata(approved_root) {
+            Ok(meta) if is_link_or_reparse(&meta) || !meta.is_dir() => "unsafe_root",
+            Ok(_) => match std::fs::symlink_metadata(approved_root.join("sample")) {
+                Ok(meta) if is_link_or_reparse(&meta) => "unsafe_target",
+                Ok(_) => "target_exists",
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => "no_target",
+                Err(_) => "unknown",
+            },
+            Err(_) => "unknown",
+        };
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = tx.execute(
+            "UPDATE fixture_command_claims SET state = 'blocked_recovery' WHERE command_id = ?1 AND state = 'consuming'",
+            params![command_id])?;
+        if changed != 1 { bail!("no interrupted consuming claim"); }
+        tx.execute("INSERT INTO fixture_recovery_cases (command_id, classification) VALUES (?1, ?2)",
+            params![command_id, classification])?;
+        tx.commit()?;
+        Ok(classification.into())
     }
 
     /// Revocation conservatively invalidates every pending claim on that fixture device.
