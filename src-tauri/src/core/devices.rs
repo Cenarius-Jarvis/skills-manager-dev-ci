@@ -951,6 +951,14 @@ fn import_library_observation(store: &SkillStore, device_id: &str, observation: 
                 if !report.complete { bail!("incomplete report cannot replace a complete library"); }
                 if view.reported_at.map(|old| report.reported_at < old).unwrap_or(false) {
                     view.state = "older".into();
+                } else if view.reported_at == Some(report.reported_at) {
+                    // A timestamp has only second precision. Different payloads
+                    // at the same time have no trustworthy ordering.
+                    let mut old_skills = view.skills.clone();
+                    let mut new_skills = report.skills.clone();
+                    old_skills.sort_by(|a, b| a.id.cmp(&b.id));
+                    new_skills.sort_by(|a, b| a.id.cmp(&b.id));
+                    view.state = if old_skills == new_skills { "complete" } else { "invalid" }.into();
                 } else {
                     view.state = "complete".into();
                     view.reported_at = Some(report.reported_at);
@@ -1832,6 +1840,26 @@ mod tests {
         assert_eq!(view.reported_at, Some(30));
         assert!(view.skills.is_empty(), "a complete empty report is authoritative");
         assert_eq!(library_view(&store, "dev-other").unwrap().state, "missing");
+    }
+
+    #[test]
+    fn device_library_report_same_timestamp_conflict_preserves_last_good() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = SkillStore::new(&temp.path().join("store.db")).unwrap();
+        let first = fixture_library("dev-test", 20, &["one", "two"]);
+        import_library_observation(&store, "dev-test", &LibraryObservation::Complete(first.clone())).unwrap();
+        let mut reordered = first.clone();
+        reordered.skills.reverse();
+        import_library_observation(&store, "dev-test", &LibraryObservation::Complete(reordered)).unwrap();
+        assert_eq!(library_view(&store, "dev-test").unwrap().state, "complete");
+        let conflict = fixture_library("dev-test", 20, &["different"]);
+        import_library_observation(&store, "dev-test", &LibraryObservation::Complete(conflict)).unwrap();
+        let view = library_view(&store, "dev-test").unwrap();
+        assert_eq!(view.state, "invalid");
+        assert_eq!(view.skills, first.skills);
+        import_library_observation(&store, "dev-test",
+            &LibraryObservation::Complete(fixture_library("dev-test", 21, &["newer"]))).unwrap();
+        assert_eq!(library_view(&store, "dev-test").unwrap().skills[0].name, "newer");
     }
 
     #[test]
