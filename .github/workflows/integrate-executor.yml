@@ -1,0 +1,39 @@
+name: Integrate tested executor branches
+on:
+  push:
+    branches: [codex/executor-integration-prep]
+    paths: ['.github/workflows/integrate-executor.yml']
+permissions:
+  contents: write
+jobs:
+  integrate:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+      - name: Merge reviewed snapshots into a new candidate branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          output_ref=refs/heads/codex/integration-executor-tested
+          if git ls-remote --exit-code --heads origin "$output_ref" >/dev/null 2>&1; then
+            echo "Output branch already exists; refusing to change it"
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for commit in b4f43f5ee969644f9ca1dd9e2ebbbd8a00961cb3 00c9c7b97cf1a7f475641ad7c85e0cdeb3b28b79; do
+            git fetch --no-tags origin "$commit"
+            test "$(git rev-parse FETCH_HEAD)" = "$commit"
+            if ! git merge --no-ff --no-edit "$commit"; then
+              git status --short
+              echo "Integration conflict; candidate was not published."
+              exit 1
+            fi
+            git merge-base --is-ancestor "$commit" HEAD
+          done
+          git diff --check HEAD^ HEAD
+          git push origin "HEAD:$output_ref"
+          echo "Created $output_ref; run integrated tests before use."
