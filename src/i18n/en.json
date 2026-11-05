@@ -290,7 +290,15 @@
     "agentKeyLabel": "Target agent",
     "createInstruction": "Send",
     "instructionCreated": "Deployment request published",
-    "manageTitle": "Devices (management)"
+    "manageTitle": "Devices (management)",
+    "refreshFailed": "Unable to refresh the device channel.",
+    "cachedProjectionNotice": "Showing the local record of device reports; it may not include all skills currently on a device.",
+    "channelNotChecked": "The channel has not been checked in this view.",
+    "channelIncomplete": "The latest refresh reported problems. Device information may be incomplete:",
+    "channelNoWarnings": "The latest channel refresh reported no problems.",
+    "currentNoDevices": "No devices are present in the local records.",
+    "currentNoSkillRecords": "No agent skill records are currently available for this device.",
+    "currentNoInstructions": "No deployment requests are present in the local records."
   },
   "firstRun": {
     "title": "Start fresh, or restore from a backup?",
