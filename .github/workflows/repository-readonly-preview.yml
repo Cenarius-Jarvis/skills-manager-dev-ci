@@ -1,7 +1,7 @@
 name: Build isolated repository preview
 on:
   push:
-    branches: [codex/repository-readonly-preview]
+    branches: [codex/fix-preview-startup]
     paths: ['.github/workflows/repository-readonly-preview.yml']
 permissions:
   contents: read
@@ -20,6 +20,11 @@ jobs:
         with:
           workspaces: src-tauri
       - run: npm ci
+      - name: Set preview-only Tauri build configuration
+        shell: pwsh
+        run: |
+          $config = Get-Content -LiteralPath 'src-tauri/tauri.repository-preview.conf.json' -Raw | ConvertFrom-Json | ConvertTo-Json -Depth 100 -Compress
+          "TAURI_CONFIG=$config" | Out-File -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Test shared repository component
         run: npx vitest run src/components/RepositorySources.test.tsx
       - name: Build preview interface
@@ -36,25 +41,32 @@ jobs:
           $exe = 'src-tauri/target/release/repository-readonly-preview.exe'
           if (-not (Test-Path -LiteralPath $exe)) { throw 'Preview executable missing' }
           Get-FileHash -Algorithm SHA256 -LiteralPath $exe
-      - name: Smoke test in clean hosted user profile
+      - name: Verify actual window and isolated WebView
         shell: pwsh
         run: |
           $protected = @(
             (Join-Path $env:USERPROFILE '.skills-manager'),
             (Join-Path $env:USERPROFILE '.codex'),
             (Join-Path $env:USERPROFILE '.agents'),
-            (Join-Path $env:USERPROFILE '.config/opencode'),
-            (Join-Path $env:APPDATA 'skills-manager')
+            (Join-Path $env:LOCALAPPDATA 'com.agentskills.desktop')
           )
           foreach ($path in $protected) {
-            if (Test-Path -LiteralPath $path) { throw "Expected clean hosted fixture path: $path" }
+            if (Test-Path -LiteralPath $path) { throw "Expected clean fixture path: $path" }
           }
           $exe = (Resolve-Path -LiteralPath 'src-tauri/target/release/repository-readonly-preview.exe').Path
-          $process = Start-Process -FilePath $exe -WindowStyle Hidden -PassThru
+          $process = Start-Process -FilePath $exe -PassThru
           try {
-            Start-Sleep -Seconds 10
-            $process.Refresh()
-            if ($process.HasExited) { throw "Preview exited during startup: $($process.ExitCode)" }
+            $deadline = (Get-Date).AddSeconds(45)
+            do {
+              Start-Sleep -Seconds 1
+              $process.Refresh()
+              if ($process.HasExited) { throw "Preview exited during startup: $($process.ExitCode)" }
+            } while ($process.MainWindowHandle -eq 0 -and (Get-Date) -lt $deadline)
+            if ($process.MainWindowHandle -eq 0) { throw 'Preview did not create a visible main window' }
+            $webviews = @(Get-CimInstance Win32_Process -Filter "Name = 'msedgewebview2.exe'" | Where-Object { $_.CommandLine -like '*--webview-exe-name=repository-readonly-preview.exe*' })
+            if ($webviews.Count -eq 0) { throw 'Preview WebView was not observed' }
+            if (@($webviews | Where-Object { $_.CommandLine -like '*com.agentskills.desktop*' }).Count -ne 0) { throw 'Preview used production WebView data directory' }
+            if (@($webviews | Where-Object { $_.CommandLine -like '*dev.skillsmanager.repositoryreadonlypreview*' }).Count -eq 0) { throw 'Preview isolated WebView directory not observed' }
           } finally {
             if (-not $process.HasExited) {
               $null = $process.CloseMainWindow()
