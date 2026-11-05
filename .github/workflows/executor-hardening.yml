@@ -31,4 +31,4 @@ jobs:
           cargo test --manifest-path src-tauri/Cargo.toml --lib core::device_executor::tests:: -- --test-threads=1
       - name: Test CLI dry-run preflight
         run: |
-          cargo test --manifest-path src-tauri/Cargo.toml --bin skills-manager-cli executor_dry_run_requires_explicit_identity_before_store_initialization
+          cargo test --manifest-path src-tauri/Cargo.toml --bin skills-manager-cli executor_dry_run -- --test-threads=1
