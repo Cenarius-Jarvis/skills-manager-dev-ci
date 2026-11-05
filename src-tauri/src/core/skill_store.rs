@@ -238,6 +238,17 @@ impl SkillStore {
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
+    /// Strict minimal projection for device reports. Unlike get_all_skills,
+    /// decoding errors must fail the whole report rather than drop a row.
+    pub(crate) fn get_library_report_skills(&self) -> Result<Vec<super::devices::LibrarySkillReport>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT id, name, enabled FROM skills ORDER BY name, id")?;
+        let rows = stmt.query_map([], |row| Ok(super::devices::LibrarySkillReport {
+            id: row.get(0)?, name: row.get(1)?, enabled: row.get(2)?,
+        }))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     pub fn get_skill_by_id(&self, id: &str) -> Result<Option<SkillRecord>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(

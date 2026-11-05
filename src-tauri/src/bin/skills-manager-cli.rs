@@ -725,6 +725,23 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         print_json(&report, cli.json);
         return Ok(());
     }
+    // Reporting reads the existing DB directly; normal CLI initialization
+    // can migrate/reindex it and is not appropriate for a read-only snapshot.
+    if let Commands::Devices(DevicesArgs {
+        command: DevicesCommand::ReportLibrary { url, branch, device_id }
+    }) = &cli.command {
+        if cli.skills_root.is_some() {
+            bail!("devices report-library cannot be combined with --skills-root");
+        }
+        let selected_branch = branch.as_deref().unwrap_or(devices::DEFAULT_CHANNEL_BRANCH);
+        devices::validate_branch_name(selected_branch)?;
+        let report = devices::library_report_from_database(
+            &central_repo::db_path(), device_id, chrono::Utc::now().timestamp()
+        )?;
+        devices::publish_library_report(url, selected_branch, &report)?;
+        print_json(&report, cli.json);
+        return Ok(());
+    }
     // A preview cannot open the regular store: initialization may create or
     // migrate files, and an implicit identity could be persisted. Require an
     // explicit id and enter the read-only executor path before opening it.
@@ -914,13 +931,7 @@ fn run_devices(args: DevicesArgs, store: &SkillStore, json: bool) -> anyhow::Res
             Ok(())
         }
         DevicesCommand::Inventory { .. } => unreachable!("handled before the store is opened"),
-        DevicesCommand::ReportLibrary { url, branch, device_id } => {
-            let report = devices::library_report_from_store(store, &device_id, chrono::Utc::now().timestamp())?;
-            let branch = branch.as_deref().unwrap_or(devices::DEFAULT_CHANNEL_BRANCH);
-            devices::publish_library_report(&url, branch, &report)?;
-            print_json(&report, json);
-            Ok(())
-        }
+        DevicesCommand::ReportLibrary { .. } => unreachable!("handled before the store is opened"),
         DevicesCommand::Whoami => {
             let report = DevicesWhoami {
                 device_id: devices::local_device_id(store)?,
@@ -3532,6 +3543,21 @@ mod tests {
             }) => assert_eq!(inventory_allowed_roots, vec![PathBuf::from("library-one"), PathBuf::from("library-two")]),
             other => panic!("unexpected command {other:?}"),
         }
+    }
+
+    #[test]
+    fn device_library_report_missing_database_does_not_initialize_store() {
+        let temp = tempdir().unwrap();
+        let base = temp.path().join("not-created");
+        central_repo::set_runtime_base_dir_override(Some(base.clone()));
+        let cli = Cli::try_parse_from([
+            "skills-manager-cli", "devices", "report-library",
+            "--url", "fixture.git", "--device-id", "dev-test",
+        ]).unwrap();
+        let result = run(cli);
+        central_repo::set_runtime_base_dir_override(None);
+        assert!(result.is_err());
+        assert!(!base.exists(), "report command must not create the manager store");
     }
 
     #[test]

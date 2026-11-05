@@ -1,0 +1,28 @@
+name: Strict central library report checks
+on:
+  push:
+    branches: [codex/central-report-guard]
+    paths: ['.github/workflows/central-report-guard.yml']
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: src-tauri
+      - name: Install Linux runner libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: Verify strict and conflicting library reports
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib device_library_report -- --test-threads=1
+      - name: Verify CLI does not initialize absent store
+        run: cargo test --manifest-path src-tauri/Cargo.toml --bin skills-manager-cli device_library_report_missing_database -- --test-threads=1
