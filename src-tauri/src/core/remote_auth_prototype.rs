@@ -180,6 +180,30 @@ mod tests {
         Ok(())
     }
 
+    fn revoke_fixture_root(conn: &mut Connection, device_id: &str, agent_key: &str) -> Result<()> {
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = tx.execute("UPDATE fixture_authorized_roots SET state = 'revoked' WHERE device_id = ?1 AND agent_key = ?2",
+            params![device_id, agent_key])?;
+        if changed != 1 { bail!("unknown agent root"); }
+        tx.execute("UPDATE fixture_command_claims SET state = 'revoked_after_claim' WHERE device_id = ?1 AND state = 'claimed'",
+            params![device_id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    #[test]
+    fn remote_auth_prototype_revoked_agent_root_rejects_new_claim() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut conn = open_fixture(&temp.path().join("commands.db"));
+        let (cmd, trust, signer) = fixture();
+        initialize_pairing(&conn, &cmd, &trust);
+        let signature = signer.sign(&canonical(&cmd).unwrap());
+        revoke_fixture_root(&mut conn, &cmd.device_id, &cmd.agent_key).unwrap();
+        assert!(paired_claim(&mut conn, &cmd, signature.as_ref(), "dev-fixture", 200).is_err());
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM fixture_command_claims", [], |row| row.get(0)).unwrap();
+        assert_eq!(count, 0);
+    }
+
     #[test]
     fn remote_auth_prototype_pairing_requires_matching_local_trust_and_root() {
         let temp = tempfile::tempdir().unwrap();
