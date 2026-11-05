@@ -64,6 +64,7 @@ const pageFixture: DevicesPage = {
 const tauri = vi.hoisted(() => ({
   devicesGetPage: vi.fn(),
   devicesRefreshChannel: vi.fn(),
+  devicesCreateInstruction: vi.fn(),
 }));
 
 vi.mock("../lib/tauri", () => tauri);
@@ -87,6 +88,18 @@ afterEach(async () => {
 });
 
 describe("Devices page", () => {
+  it("explains and blocks unavailable unsigned instruction publishing", async () => {
+    tauri.devicesGetPage.mockResolvedValue(pageFixture);
+    await act(async () => root.render(<Devices />));
+    const button = container.querySelector<HTMLButtonElement>('[data-testid="instruct-submit-dev-1"]');
+    const hint = container.querySelector<HTMLElement>('#instruct-hint-dev-1');
+    expect(button?.disabled).toBe(true);
+    expect(button?.getAttribute("aria-describedby")).toBe(hint?.id);
+    expect(hint?.textContent).toContain("devices.instructHint");
+    await act(async () => { button?.click(); });
+    expect(tauri.devicesCreateInstruction).not.toHaveBeenCalled();
+  });
+
   it("renders reported device skills and instruction states without claiming unreported success", async () => {
     tauri.devicesGetPage.mockResolvedValue(pageFixture);
     await act(async () => root.render(<Devices />));
