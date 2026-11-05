@@ -1,0 +1,26 @@
+name: Remote device refresh checks
+on:
+  push:
+    branches: [codex/remote-refresh-fix]
+    paths:
+      - 'src/context/DeviceViewContext*'
+      - 'src/components/RemoteDeviceLibrary*'
+      - 'src/views/MySkills.tsx'
+      - '.github/workflows/remote-refresh-check.yml'
+permissions:
+  contents: read
+jobs:
+  frontend:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Test channel refresh and visible failures
+        run: npx vitest run src/context/DeviceViewContext.test.tsx src/components/RemoteDeviceLibrary.test.tsx
+      - name: Compile full frontend
+        run: npm run build
