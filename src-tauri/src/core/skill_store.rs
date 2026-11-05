@@ -1975,3 +1975,86 @@ mod tag_tests {
         assert!(map.get("b").is_none());
     }
 }
+
+
+// Independent read-only Git repository sources. URLs are encrypted using the
+// same local key as other sensitive settings, and snapshots are separate from
+// managed skills/agent deployment state.
+impl SkillStore {
+    pub fn insert_repository_source(&self, source: &super::repository_sources::RepositorySource) -> Result<()> {
+        let encrypted = crypto::encrypt(&self.secret_key, &source.url)?;
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO repository_sources (id, name, device_id, encrypted_url, branch, skills_root, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![source.id, source.name, source.device_id, encrypted, source.branch, source.skills_root, source.created_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_repository_sources(&self) -> Result<Vec<super::repository_sources::RepositorySource>> {
+        let rows = {
+            let conn = self.conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT id, name, device_id, encrypted_url, branch, skills_root, created_at
+                 FROM repository_sources ORDER BY created_at, id"
+            )?;
+            let rows = stmt.query_map([], |row| Ok((
+                row.get::<_, String>(0)?, row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?, row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?, row.get::<_, String>(5)?,
+                row.get::<_, i64>(6)?,
+            )))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        rows.into_iter().map(|(id, name, device_id, encrypted, branch, skills_root, created_at)| {
+            Ok(super::repository_sources::RepositorySource {
+                id, name, device_id, url: crypto::decrypt(&self.secret_key, &encrypted)?,
+                branch, skills_root, created_at,
+            })
+        }).collect()
+    }
+
+    pub fn get_repository_source(&self, id: &str) -> Result<Option<super::repository_sources::RepositorySource>> {
+        Ok(self.list_repository_sources()?.into_iter().find(|source| source.id == id))
+    }
+
+    pub fn delete_repository_source(&self, id: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.execute("DELETE FROM repository_sources WHERE id = ?1", params![id])? > 0)
+    }
+
+    pub fn save_repository_snapshot(&self, snapshot: &super::repository_sources::RepositorySnapshot) -> Result<()> {
+        let skills_json = serde_json::to_string(&snapshot.skills)?;
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO repository_source_snapshots (source_id, head_commit, fetched_at, observed_at, skills_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(source_id) DO UPDATE SET
+               head_commit = excluded.head_commit, fetched_at = excluded.fetched_at,
+               observed_at = excluded.observed_at, skills_json = excluded.skills_json
+             WHERE excluded.observed_at >= repository_source_snapshots.observed_at",
+            params![snapshot.source_id, snapshot.head_commit, snapshot.fetched_at, snapshot.observed_at, skills_json],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_repository_snapshot(&self, id: &str) -> Result<Option<super::repository_sources::RepositorySnapshot>> {
+        let row = {
+            let conn = self.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT head_commit, fetched_at, observed_at, skills_json
+                 FROM repository_source_snapshots WHERE source_id = ?1",
+                params![id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?, row.get::<_, String>(3)?)),
+            ).optional()?
+        };
+        row.map(|(head_commit, fetched_at, observed_at, skills_json)| Ok(
+            super::repository_sources::RepositorySnapshot {
+                source_id: id.to_string(), head_commit, fetched_at, observed_at,
+                skills: serde_json::from_str(&skills_json)?,
+            }
+        )).transpose()
+    }
+}
