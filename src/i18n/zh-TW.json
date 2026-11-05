@@ -1242,5 +1242,24 @@
     "remoteHint": "遠端裝置",
     "manage": "管理裝置…",
     "remoteTag": "遠端"
+  },
+  "repositorySources": {
+    "title": "獨立 Git 儲存庫",
+    "hint": "讀取各儲存庫指定分支已提交的內容，不包含工作區未提交的變更。讀取不會推送或部署。",
+    "name": "來源名稱",
+    "device": "所屬裝置（選填）",
+    "unassigned": "未關聯裝置",
+    "url": "HTTPS 或 SSH 位址（不含憑證）",
+    "branch": "分支",
+    "root": "技能根目錄（選填）",
+    "add": "新增來源",
+    "empty": "尚未新增儲存庫來源。",
+    "working": "處理中…",
+    "refresh": "重新整理清單",
+    "remove": "移除來源設定",
+    "refreshFailed": "重新整理失敗，保留上次成功的清單。",
+    "commit": "提交",
+    "noSkills": "此提交的清單中沒有技能。",
+    "notFetched": "尚無成功讀取的清單。"
   }
 }
