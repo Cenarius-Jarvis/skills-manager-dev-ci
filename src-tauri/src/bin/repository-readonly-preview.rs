@@ -67,7 +67,7 @@ mod tests {
 
     #[test]
     fn compiled_preview_context_uses_visible_isolated_configuration() {
-        let context = tauri::generate_context!("tauri.repository-preview.conf.json");
+        let context: tauri::Context<tauri::Wry> = tauri::generate_context!("tauri.repository-preview.conf.json");
         let config = context.config();
         assert_eq!(config.identifier, "dev.skillsmanager.repositoryreadonlypreview");
         assert_eq!(config.app.windows.len(), 1);
