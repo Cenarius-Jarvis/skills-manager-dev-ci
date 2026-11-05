@@ -18,7 +18,7 @@ export function RepositorySources({ devices }: { devices: DeviceWithStatus[] }) 
   const [snapshots, setSnapshots] = useState<Record<string, RepositorySnapshot | null>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState("");
+  const [busy, setBusy] = useState("loading");
   const [name, setName] = useState("");
   const [deviceId, setDeviceId] = useState("");
   const [url, setUrl] = useState("");
@@ -40,6 +40,8 @@ export function RepositorySources({ devices }: { devices: DeviceWithStatus[] }) 
         setErrors(Object.fromEntries(entries.filter((entry) => entry.error).map(({ id, error }) => [id, error])));
       } catch (err) {
         if (active) setError(message(err));
+      } finally {
+        if (active) setBusy("");
       }
     })();
     return () => { active = false; };
