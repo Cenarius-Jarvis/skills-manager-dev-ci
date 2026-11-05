@@ -298,7 +298,7 @@ fn create_unsigned_instruction_fixture(
     // Publishing here is the moment of record: until the push succeeds, no
     // device can see the request, so the DB row is written only afterwards.
     let head = with_retry(|| {
-        devices::publish_instructions(&url, &branch, Some(&manifest), std::slice::from_ref(&instruction))
+        devices::publish_instructions_unsigned_fixture(&url, &branch, Some(&manifest), std::slice::from_ref(&instruction))
     })
     .map_err(git_err)?;
 
