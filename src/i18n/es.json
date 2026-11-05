@@ -290,7 +290,15 @@
     "agentKeyLabel": "Agente de destino",
     "createInstruction": "Enviar",
     "instructionCreated": "Solicitud de despliegue publicada",
-    "manageTitle": "Dispositivos (gestión)"
+    "manageTitle": "Dispositivos (gestión)",
+    "refreshFailed": "No se pudo actualizar el canal de dispositivos.",
+    "cachedProjectionNotice": "Se muestran los informes guardados localmente; puede que no incluyan todas las habilidades actuales del dispositivo.",
+    "channelNotChecked": "El canal aún no se ha comprobado en esta vista.",
+    "channelIncomplete": "La última actualización informó de problemas; los datos pueden estar incompletos:",
+    "channelNoWarnings": "La última actualización del canal no informó de problemas.",
+    "currentNoDevices": "No hay dispositivos en los registros locales.",
+    "currentNoSkillRecords": "No hay registros locales de habilidades de agentes para este dispositivo.",
+    "currentNoInstructions": "No hay solicitudes de despliegue en los registros locales."
   },
   "firstRun": {
     "title": "¿Empezar de cero o restaurar desde una copia?",
