@@ -1,0 +1,48 @@
+name: Device central library checks
+on:
+  push:
+    branches: [codex/device-central-library-1433]
+    paths: ['.github/workflows/device-central-library-check.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  backend:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: src-tauri
+      - name: Install Linux runner build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: Test local Git library snapshots and privacy
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib device_library_report -- --test-threads=1
+      - name: Test agent link inventory on this platform
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib inventory_ -- --test-threads=1
+      - name: Compile and test CLI
+        run: cargo test --manifest-path src-tauri/Cargo.toml --bin skills-manager-cli inventory_run_once_cli_accepts_repeated_explicit_roots
+  frontend:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install frontend dependencies on runner
+        run: npm ci
+      - name: Test remote library and channel warnings
+        run: npx vitest run src/components/RemoteDeviceLibraryInventory.test.tsx src/components/RemoteDeviceLibrary.test.tsx
+      - name: Build frontend
+        run: npm run build
+      - name: Check translations
+        run: node scripts/check-i18n.mjs
