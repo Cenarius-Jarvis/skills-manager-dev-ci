@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Stdio;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use super::devices;
 use super::git_command::git_command;
@@ -196,7 +196,7 @@ pub fn refresh_source(store: &SkillStore, source_id: &str) -> Result<RepositoryS
 }
 
 fn fetch_and_save(store: &SkillStore, source: &RepositorySource, url: &str) -> Result<RepositorySnapshot> {
-    let start = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos().min(i64::MAX as u128) as i64;
+    let start = store.reserve_repository_refresh(&source.id)?;
     let snapshot = read_snapshot(url, source, start)?;
     store.save_repository_snapshot(&snapshot)?;
     store.get_repository_snapshot(&source.id)?.context("source removed during refresh")
@@ -205,6 +205,35 @@ fn fetch_and_save(store: &SkillStore, source: &RepositorySource, url: &str) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    #[test]
+    fn repository_sources_sequence_prevents_out_of_order_and_preserves_old_cache() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let store = SkillStore::new(&tmp.path().join("state.db"))?;
+        let source = RepositorySource {
+            id: "repo-a".into(), name: "A".into(), device_id: None,
+            url: "https://github.com/example/fixture.git".into(), branch: "main".into(),
+            skills_root: "skills".into(), created_at: 1,
+        };
+        store.insert_repository_source(&source)?;
+        let snapshot = |seq: i64, head: &str| RepositorySnapshot {
+            source_id: source.id.clone(), head_commit: head.into(),
+            fetched_at: 1, observed_at: seq, skills: vec![],
+        };
+        let old_wall_clock = 1_800_000_000_000_000_000i64;
+        store.save_repository_snapshot(&snapshot(old_wall_clock, "legacy"))?;
+        let first = store.reserve_repository_refresh(&source.id)?;
+        let second = store.reserve_repository_refresh(&source.id)?;
+        assert!(first > old_wall_clock && second > first);
+        store.save_repository_snapshot(&snapshot(second, "newer"))?;
+        store.save_repository_snapshot(&snapshot(first, "older"))?;
+        store.save_repository_snapshot(&snapshot(second, "equal"))?;
+        assert_eq!(store.get_repository_snapshot(&source.id)?.unwrap().head_commit, "newer");
+        assert!(store.delete_repository_source(&source.id)?);
+        assert!(store.reserve_repository_refresh(&source.id).is_err());
+        Ok(())
+    }
 
     fn write_fake_repository(path: &Path, names: &[&str], symlink: bool) -> Result<String> {
         let repo = if path.exists() { git2::Repository::open_bare(path)? }

@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::path::PathBuf;
@@ -2054,6 +2054,40 @@ impl SkillStore {
         Ok(conn.execute("DELETE FROM repository_sources WHERE id = ?1", params![id])? > 0)
     }
 
+    /// Reserve a cross-process ordering token before a repository refresh.
+    /// Persisting a monotonic sequence avoids wall-clock adjustments allowing
+    /// an older refresh to overwrite a later successful result.
+    pub fn reserve_repository_refresh(&self, source_id: &str) -> Result<i64> {
+        use rusqlite::TransactionBehavior;
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let source_exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM repository_sources WHERE id = ?1)",
+            params![source_id], |row| row.get(0),
+        )?;
+        if !source_exists { anyhow::bail!("repository source not found"); }
+        let key = "repository.sources.refresh_sequence";
+        let previous: Option<String> = tx.query_row(
+            "SELECT value FROM settings WHERE key = ?1", params![key], |row| row.get(0)
+        ).optional()?;
+        let previous: i64 = match previous {
+            Some(value) => value.parse().context("invalid repository refresh sequence")?,
+            None => 0,
+        };
+        // A prior preview may have stored nanosecond wall-clock values.
+        // Continue above those values instead of making its cache permanent.
+        let highest: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(observed_at), 0) FROM repository_source_snapshots",
+            [], |row| row.get(0),
+        )?;
+        let next = previous.max(highest).checked_add(1)
+            .context("repository refresh sequence exhausted")?;
+        tx.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+            params![key, next.to_string()])?;
+        tx.commit()?;
+        Ok(next)
+    }
+
     pub fn save_repository_snapshot(&self, snapshot: &super::repository_sources::RepositorySnapshot) -> Result<()> {
         let skills_json = serde_json::to_string(&snapshot.skills)?;
         let conn = self.conn.lock().unwrap();
@@ -2063,7 +2097,7 @@ impl SkillStore {
              ON CONFLICT(source_id) DO UPDATE SET
                head_commit = excluded.head_commit, fetched_at = excluded.fetched_at,
                observed_at = excluded.observed_at, skills_json = excluded.skills_json
-             WHERE excluded.observed_at >= repository_source_snapshots.observed_at",
+             WHERE excluded.observed_at > repository_source_snapshots.observed_at",
             params![snapshot.source_id, snapshot.head_commit, snapshot.fetched_at, snapshot.observed_at, skills_json],
         )?;
         Ok(())
