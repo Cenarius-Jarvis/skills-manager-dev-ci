@@ -18,11 +18,13 @@ export function RemoteDeviceLibrary({
   device,
   instructions,
   loading,
+  error,
   onRefresh,
 }: {
   device: DeviceWithStatus;
   instructions: DeviceInstructionRow[];
   loading: boolean;
+  error?: string | null;
   onRefresh: () => void;
 }) {
   const { t, i18n } = useTranslation();
@@ -50,6 +52,12 @@ export function RemoteDeviceLibrary({
           {t("devices.refresh")}
         </button>
       </div>
+
+      {error && (
+        <div role="alert" className="rounded-xl border border-red-500/25 bg-red-500/10 px-4 py-3 text-[13px] text-red-600 dark:text-red-400">
+          {t("devices.refresh")}: {error}
+        </div>
+      )}
 
       <div className="app-panel p-4" data-testid={`remote-device-${device.id}`}>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
