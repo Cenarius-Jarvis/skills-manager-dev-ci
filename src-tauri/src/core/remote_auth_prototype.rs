@@ -212,8 +212,9 @@ mod tests {
         Ok(())
     }
 
-    /// Fixture-only recovery observation. Never follows or writes the target,
-    /// never restarts work, and only classifies what is visible at this instant.
+    /// Fixture-only observation; the final target component is not followed.
+    /// Ancestors and concurrent filesystem changes are not secured here.
+    /// No target is written and no work is restarted; classification is momentary.
     fn block_interrupted_fixture(conn: &mut Connection, command_id: &str, approved_root: &std::path::Path) -> Result<String> {
         fn is_link_or_reparse(meta: &std::fs::Metadata) -> bool {
             #[cfg(windows)]
@@ -466,6 +467,43 @@ mod tests {
         assert_eq!(block_interrupted_fixture(&mut conn, &cmd.command_id, &root).unwrap(), "target_exists");
         assert_eq!(std::fs::read(&target).unwrap().as_slice(), b"do-not-modify");
         assert!(paired_begin(&mut conn, &cmd, &signature, "dev-fixture", 200).is_err());
+    }
+
+    #[test]
+    fn remote_auth_prototype_recovery_case_conflict_rolls_back_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("fake-agent");
+        std::fs::create_dir_all(&root).unwrap();
+        let (mut conn, cmd, _) = interrupted_fixture(temp.path());
+        conn.execute("INSERT INTO fixture_recovery_cases VALUES (?1, 'existing')", params![cmd.command_id]).unwrap();
+        assert!(block_interrupted_fixture(&mut conn, &cmd.command_id, &root).is_err());
+        let state: String = conn.query_row("SELECT state FROM fixture_command_claims WHERE command_id = ?1",
+            params![cmd.command_id], |row| row.get(0)).unwrap();
+        assert_eq!(state, "consuming", "failed evidence insert must roll back state transition");
+    }
+
+    #[test]
+    fn remote_auth_prototype_concurrent_recovery_observers_do_not_duplicate_cases() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("fake-agent");
+        std::fs::create_dir_all(&root).unwrap();
+        let (conn, cmd, _) = interrupted_fixture(temp.path());
+        drop(conn);
+        let db = temp.path().join("commands.db");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let mut threads = vec![];
+        for _ in 0..2 {
+            let (db, root, id, gate) = (db.clone(), root.clone(), cmd.command_id.clone(), barrier.clone());
+            threads.push(std::thread::spawn(move || {
+                let mut conn = open_fixture(&db);
+                gate.wait();
+                block_interrupted_fixture(&mut conn, &id, &root).is_ok()
+            }));
+        }
+        assert_eq!(threads.into_iter().map(|t| t.join().unwrap()).filter(|ok| *ok).count(), 1);
+        let conn = open_fixture(&db);
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM fixture_recovery_cases", [], |row| row.get(0)).unwrap();
+        assert_eq!(count, 1);
     }
 
     #[cfg(unix)]
