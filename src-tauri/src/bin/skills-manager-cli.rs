@@ -730,7 +730,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     // explicit id and enter the read-only executor path before opening it.
     if let Commands::Devices(DevicesArgs {
         command: DevicesCommand::RunOnce {
-            url, branch, device_id, agents, max_instructions, dry_run: true
+            url, branch, device_id, agents, inventory_allowed_roots, max_instructions, dry_run: true
         }
     }) = &cli.command {
         if cli.skills_root.is_some() {
@@ -745,6 +745,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             branch: branch.clone().unwrap_or_else(|| devices::DEFAULT_CHANNEL_BRANCH.to_string()),
             device_id: id.clone(),
             agents: parse_executor_agents(agents)?,
+            inventory_allowed_roots: inventory_allowed_roots.clone(),
             max_instructions: *max_instructions,
             dry_run: true,
         };
@@ -826,6 +827,10 @@ enum DevicesCommand {
         /// Agent allow-list and target directory, repeatable: --agent key=dir.
         #[arg(long = "agent")]
         agents: Vec<String>,
+        /// Approved roots for linked inventory directories; repeat as needed.
+        /// Applies only to read-only reporting, never to deployment authority.
+        #[arg(long = "allowed-root")]
+        inventory_allowed_roots: Vec<PathBuf>,
         /// Maximum instructions considered per run.
         #[arg(long, default_value_t = 10)]
         max_instructions: usize,
@@ -874,6 +879,7 @@ fn run_devices(args: DevicesArgs, store: &SkillStore, json: bool) -> anyhow::Res
             branch,
             device_id,
             agents,
+            inventory_allowed_roots,
             max_instructions,
             dry_run,
         } => {
@@ -886,6 +892,7 @@ fn run_devices(args: DevicesArgs, store: &SkillStore, json: bool) -> anyhow::Res
                     None => devices::local_device_id(store)?,
                 },
                 agents: mappings,
+                inventory_allowed_roots,
                 max_instructions,
                 dry_run,
             };
@@ -3454,6 +3461,21 @@ mod tests {
     use app_lib::core::tool_adapters::{CustomToolDef, ToolCategory};
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn inventory_run_once_cli_accepts_repeated_explicit_roots() {
+        let parsed = Cli::try_parse_from([
+            "skills-manager-cli", "devices", "run-once", "--url", "fixture.git",
+            "--agent", "codex=agent", "--allowed-root", "library-one",
+            "--allowed-root", "library-two",
+        ]).unwrap();
+        match parsed.command {
+            Commands::Devices(DevicesArgs {
+                command: DevicesCommand::RunOnce { inventory_allowed_roots, .. }
+            }) => assert_eq!(inventory_allowed_roots, vec![PathBuf::from("library-one"), PathBuf::from("library-two")]),
+            other => panic!("unexpected command {other:?}"),
+        }
+    }
 
     #[test]
     fn executor_dry_run_requires_explicit_identity_before_store_initialization() {

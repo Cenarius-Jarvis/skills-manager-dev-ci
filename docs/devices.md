@@ -125,7 +125,7 @@ commit exists on the channel.
 
 ### Executor (device side)
 
-`skills-manager-cli devices executor-run-once` — one shot, exits when done:
+`skills-manager-cli devices run-once` — one shot, exits when done:
 
 1. Fetch the control channel; load instructions addressed to this device.
 2. Skip: expired, already journaled as completed (idempotency journal with
@@ -138,6 +138,28 @@ commit exists on the channel.
 4. For an undeploy: remove only paths recorded in its own journal.
 5. Publish `state.json` (agents and skills it manages, timestamps) and all
    receipts; push once; exit non-zero only if nothing could be published.
+
+The inventory scan accepts zero or more **explicit** trusted directory-link
+roots through repeatable `--allowed-root <path>` arguments. For example, on a
+test machine only:
+
+```text
+skills-manager-cli devices run-once --url <test-channel> --device-id <test-device> --agent codex=<test-agent-dir> --allowed-root <test-library-1> --allowed-root <test-library-2>
+```
+
+No roots are trusted by default. A directory symlink or Windows junction is
+reported only when its fully resolved target is under one of these roots;
+broken links, outside targets, an unavailable root, an inaccessible directory,
+or a linked `SKILL.md` make the entire report incomplete. The executor keeps
+the last published inventory and its original timestamp rather than publishing
+an incomplete/empty replacement. Receipts may still be published. Consequently,
+a stale report can age out and be shown as offline; the executor's local
+warnings explain why no new state report was published.
+
+These roots control **only which links may be read for status**; they do not
+authorize deployment. `run-once` also processes queued deployment instructions
+unless `--dry-run` is selected: use an isolated test channel and directories
+until the remote executor and deployment policy have been independently reviewed.
 
 The executor keeps its own config (agent → directory mapping), lock file and
 journal under its own base directory, touches nothing else on the machine,

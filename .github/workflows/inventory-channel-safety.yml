@@ -1,0 +1,24 @@
+name: Inventory channel safety tests
+on:
+  push:
+    branches: [codex/inventory-incomplete-guard]
+    paths:
+      - 'src-tauri/src/core/device_executor.rs'
+      - '.github/workflows/inventory-channel-safety.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  safety:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: src-tauri
+      - name: Install runner-only dependencies
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: Test inventory reports using isolated fixtures and local Git remote
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib inventory_

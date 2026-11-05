@@ -1,0 +1,20 @@
+name: Remote inventory Windows safety checks
+on:
+  push:
+    branches: [codex/inventory-guard-windows]
+    paths: ['.github/workflows/inventory-guard-windows.yml', 'src-tauri/src/core/device_executor.rs']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: src-tauri
+      - name: Verify Windows junction in simulated agent directory
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib inventory_refuses_windows_junctions
