@@ -835,7 +835,8 @@ pub enum LibraryObservation {
 
 pub fn validate_library_report(report: &LibraryReport, expected_device: &str) -> Result<()> {
     validate_device_id(expected_device)?;
-    if report.schema != LIBRARY_REPORT_VERSION || report.device_id != expected_device || report.reported_at <= 0 {
+    if report.schema != LIBRARY_REPORT_VERSION || report.device_id != expected_device || report.reported_at <= 0
+        || report.reported_at > chrono::Utc::now().timestamp().saturating_add(86_400) {
         bail!("invalid library report identity, version, or timestamp");
     }
     if report.skills.len() > LIBRARY_MAX_SKILLS { bail!("library report has too many skills"); }
@@ -921,25 +922,29 @@ pub fn library_view(store: &SkillStore, device_id: &str) -> Result<DeviceLibrary
 }
 
 fn import_library_observation(store: &SkillStore, device_id: &str, observation: &LibraryObservation) -> Result<()> {
-    let mut view = library_view(store, device_id)?;
-    match observation {
-        LibraryObservation::Missing => view.state = "missing".into(),
-        LibraryObservation::Invalid => view.state = "invalid".into(),
-        LibraryObservation::Incomplete => view.state = "incomplete".into(),
-        LibraryObservation::Complete(report) => {
-            if view.reported_at.map(|old| report.reported_at < old).unwrap_or(false) {
-                view.state = "older".into();
-            } else {
-                view.state = "complete".into();
-                view.reported_at = Some(report.reported_at);
-                view.skills = report.skills.clone();
+    store.update_device_library_projection(device_id, |current| {
+        let mut view: DeviceLibraryView = match current {
+            Some(value) => serde_json::from_str(&value).context("saved library projection is invalid")?,
+            None => DeviceLibraryView::default(),
+        };
+        match observation {
+            LibraryObservation::Missing => view.state = "missing".into(),
+            LibraryObservation::Invalid => view.state = "invalid".into(),
+            LibraryObservation::Incomplete => view.state = "incomplete".into(),
+            LibraryObservation::Complete(report) => {
+                validate_library_report(report, device_id)?;
+                if !report.complete { bail!("incomplete report cannot replace a complete library"); }
+                if view.reported_at.map(|old| report.reported_at < old).unwrap_or(false) {
+                    view.state = "older".into();
+                } else {
+                    view.state = "complete".into();
+                    view.reported_at = Some(report.reported_at);
+                    view.skills = report.skills.clone();
+                }
             }
         }
-    }
-    // One SQLite setting per device makes the snapshot replacement atomic and
-    // avoids changing the schema version of an existing Skills Manager DB.
-    store.set_setting(&library_setting_key(device_id), &serde_json::to_string(&view)?)?;
-    Ok(())
+        Ok(serde_json::to_string(&view)?)
+    })
 }
 
 #[derive(Debug, Default)]
@@ -1782,6 +1787,22 @@ mod tests {
         assert_eq!(view.reported_at, Some(30));
         assert!(view.skills.is_empty(), "a complete empty report is authoritative");
         assert_eq!(library_view(&store, "dev-other").unwrap().state, "missing");
+    }
+
+    #[test]
+    fn device_library_report_concurrent_refresh_never_replaces_newer_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(SkillStore::new(&temp.path().join("store.db")).unwrap());
+        let mut threads = Vec::new();
+        for timestamp in 1..=16 {
+            let store = store.clone();
+            threads.push(std::thread::spawn(move || {
+                let report = fixture_library("dev-test", timestamp, &["one"]);
+                import_library_observation(&store, "dev-test", &LibraryObservation::Complete(report)).unwrap();
+            }));
+        }
+        for thread in threads { thread.join().unwrap(); }
+        assert_eq!(library_view(&store, "dev-test").unwrap().reported_at, Some(16));
     }
 
     #[test]
