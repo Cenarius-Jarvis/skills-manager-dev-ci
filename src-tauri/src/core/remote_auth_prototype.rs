@@ -55,10 +55,9 @@ fn canonical(cmd: &CommandV1) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Verify before claiming; an already claimed ID is never re-executed.
-/// The caller supplies an isolated, pre-initialized fixture database.
-fn verify_and_claim(conn: &mut Connection, cmd: &CommandV1, signature: &[u8],
-    trusted: &TrustedKey, expected_device: &str, now: i64) -> Result<()> {
+/// Validate a signed envelope before any claim or deployment.
+fn validate_signed_command(cmd: &CommandV1, signature: &[u8],
+    trusted: &TrustedKey, expected_device: &str, now: i64) -> Result<String> {
     if cmd.version != 1 || cmd.operation != "deploy_existing_skill_v1"
         || !bounded_identifier(&cmd.key_id, 64)
         || uuid::Uuid::parse_str(&cmd.command_id).map(|id| id.to_string() != cmd.command_id).unwrap_or(true)
@@ -76,15 +75,27 @@ fn verify_and_claim(conn: &mut Connection, cmd: &CommandV1, signature: &[u8],
     let payload = canonical(cmd)?;
     UnparsedPublicKey::new(&signature::ED25519, &trusted.public_key)
         .verify(&payload, signature).map_err(|_| anyhow::anyhow!("invalid signature"))?;
-    let payload_hash = hex::encode(Sha256::digest(&payload));
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let inserted = tx.execute(
+    Ok(hex::encode(Sha256::digest(&payload)))
+}
+
+fn insert_claim(conn: &Connection, cmd: &CommandV1, payload_hash: &str) -> Result<()> {
+    let inserted = conn.execute(
         "INSERT INTO fixture_command_claims (command_id, device_id, payload_hash, state)
          VALUES (?1, ?2, ?3, 'claimed')
          ON CONFLICT(command_id) DO NOTHING",
         params![cmd.command_id, cmd.device_id, payload_hash],
     )?;
     if inserted != 1 { bail!("command already claimed"); }
+    Ok(())
+}
+
+/// Verify before claiming; an already claimed ID is never re-executed.
+/// The caller supplies an isolated, pre-initialized fixture database.
+fn verify_and_claim(conn: &mut Connection, cmd: &CommandV1, signature: &[u8],
+    trusted: &TrustedKey, expected_device: &str, now: i64) -> Result<()> {
+    let payload_hash = validate_signed_command(cmd, signature, trusted, expected_device, now)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    insert_claim(&tx, cmd, &payload_hash)?;
     tx.commit()?;
     Ok(())
 }
