@@ -1125,6 +1125,12 @@ pub fn run() {
             commands::agent_workspace::import_global_local_skill_to_center,
             commands::agent_workspace::update_global_local_skill_from_center,
             commands::agent_workspace::delete_global_local_skill,
+            // Independent Git repository sources (read-only refresh)
+            commands::repository_sources::repository_sources_list,
+            commands::repository_sources::repository_sources_add,
+            commands::repository_sources::repository_sources_remove,
+            commands::repository_sources::repository_sources_snapshot,
+            commands::repository_sources::repository_sources_refresh,
             // Devices
             commands::devices::devices_inspect_local,
             commands::devices::devices_get_page,
