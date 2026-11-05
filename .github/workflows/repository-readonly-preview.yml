@@ -1,4 +1,4 @@
-name: Build isolated repository preview
+name: Verify fixed repository preview
 on:
   push:
     branches: [codex/fix-preview-startup]
