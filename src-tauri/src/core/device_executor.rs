@@ -571,6 +571,16 @@ pub fn run_once(config: &ExecutorConfig) -> Result<ExecutorRunReport> {
     if config.dry_run {
         return inspect_dry_run(config);
     }
+    bail!("remote execution is disabled until authenticated commands and recovery are available")
+}
+
+/// Legacy unsigned behavior is retained solely to test existing ownership logic
+/// against fake fixtures. It is not compiled into the production executor.
+#[cfg(test)]
+fn run_once_unsigned_fixture(config: &ExecutorConfig) -> Result<ExecutorRunReport> {
+    if config.dry_run {
+        return inspect_dry_run(config);
+    }
     let state_dir = central_repo::base_dir().join(EXECUTOR_STATE_DIR);
     std::fs::create_dir_all(&state_dir).context("failed to create executor state dir")?;
 
@@ -1408,6 +1418,20 @@ mod tests {
     }
 
     #[test]
+    fn device_executor_unsigned_live_run_is_disabled_before_state_creation() {
+        let env = TestEnv::new();
+        let state = env.base.join(EXECUTOR_STATE_DIR);
+        let config = ExecutorConfig {
+            url: "https://example.invalid/fixture.git".into(),
+            branch: "devices-test".into(), device_id: "dev-test".into(),
+            agents: vec![], inventory_allowed_roots: vec![], max_instructions: 10, dry_run: false,
+        };
+        let err = run_once(&config).unwrap_err();
+        assert!(err.to_string().contains("remote execution is disabled"));
+        assert!(!state.exists(), "blocked execution must not create state or a journal");
+    }
+
+    #[test]
     fn run_once_publishes_state_report_for_empty_channel() {
         let env = TestEnv::new();
         let remote = env.base.join("channel.git");
@@ -1432,7 +1456,7 @@ mod tests {
             max_instructions: 10,
             dry_run: false,
         };
-        let report = run_once(&config).unwrap();
+        let report = run_once_unsigned_fixture(&config).unwrap();
         assert_eq!(report.considered, 0);
         assert!(report.published, "publish error: {:?}", report.publish_error);
 
@@ -1469,7 +1493,7 @@ mod tests {
             agents: vec![AgentMapping { key: "codex".into(), dir: agent }],
             inventory_allowed_roots: vec![library], max_instructions: 10, dry_run: false,
         };
-        let first = run_once(&config).unwrap();
+        let first = run_once_unsigned_fixture(&config).unwrap();
         assert!(first.published, "{:?}", first.publish_error);
         assert!(first.warnings.is_empty(), "{:?}", first.warnings);
         let initial = devices::fetch_channel_snapshot(&url, "devices-test").unwrap();
@@ -1479,7 +1503,7 @@ mod tests {
         let initial_hash = initial.states[0].agents[0].skills[0].content_hash.clone();
 
         config.inventory_allowed_roots.clear();
-        let second = run_once(&config).unwrap();
+        let second = run_once_unsigned_fixture(&config).unwrap();
         assert!(second.published, "{:?}", second.publish_error);
         assert!(second.warnings.iter().any(|w| w.contains("State report not published")));
         let after = devices::fetch_channel_snapshot(&url, "devices-test").unwrap();
@@ -1609,7 +1633,7 @@ mod tests {
             max_instructions: 10,
             dry_run: false,
         };
-        let report = run_once(&config).unwrap();
+        let report = run_once_unsigned_fixture(&config).unwrap();
         assert_eq!(report.executed, 0, "conflict: nothing deployed");
         assert_eq!(report.rejected, 1);
         assert!(report.published, "{:?}", report.publish_error);
@@ -1627,7 +1651,7 @@ mod tests {
         assert_eq!(rows[0].state, devices::TASK_STATE_FAILED);
 
         std::fs::remove_dir_all(&foreign).unwrap();
-        let report = run_once(&config).unwrap();
+        let report = run_once_unsigned_fixture(&config).unwrap();
         assert_eq!(report.executed, 1, "{:?}", report.details);
         assert!(agent_root.join("pilot-skill").join("SKILL.md").is_file());
 
