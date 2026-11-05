@@ -3567,6 +3567,23 @@ mod tests {
     }
 
     #[test]
+    fn executor_unsigned_publication_is_blocked_before_network_or_filesystem() {
+        let temp = tempdir().unwrap();
+        let missing = temp.path().join("must-not-be-created.git");
+        let inst = devices::DeviceInstruction {
+            schema: devices::DEVICE_PROTOCOL_VERSION,
+            id: "inst-fixture".into(), device_id: "dev-test".into(),
+            action: devices::ACTION_DEPLOY.into(),
+            skill_url: Some("https://example.invalid/fixture.git".into()),
+            skill_branch: None, skill_subpath: None, skill_name: Some("fixture".into()),
+            agent_key: "codex".into(), created_at: 100, expires_at: Some(200), created_by: None,
+        };
+        let err = devices::publish_instructions(missing.to_str().unwrap(), "devices-test", None, &[inst]).unwrap_err();
+        assert!(err.to_string().contains("unsigned remote instruction publication is disabled"));
+        assert!(!missing.exists());
+    }
+
+    #[test]
     fn executor_unsigned_run_is_blocked_before_store_initialization() {
         let temp = tempdir().unwrap();
         let base = temp.path().join("absent-app-state");
@@ -3617,7 +3634,23 @@ mod tests {
             agent_key: "codex".to_string(),
             created_at: now, expires_at: Some(now + 600), created_by: None,
         };
-        devices::publish_instructions(&remote_str, "devices-test", None, &[inst]).unwrap();
+        // Seed the unsigned legacy fixture directly into this temporary bare
+        // repository; the production publication API correctly rejects it.
+        {
+            let repo = git2::Repository::open_bare(&remote).unwrap();
+            let blob = repo.blob(&serde_json::to_vec(&inst).unwrap()).unwrap();
+            let mut instructions = repo.treebuilder(None).unwrap();
+            instructions.insert(format!("{}.json", inst.id).as_str(), blob, 0o100644).unwrap();
+            let mut device = repo.treebuilder(None).unwrap();
+            device.insert("instructions", instructions.write().unwrap(), 0o040000).unwrap();
+            let mut devices_tree = repo.treebuilder(None).unwrap();
+            devices_tree.insert(inst.device_id.as_str(), device.write().unwrap(), 0o040000).unwrap();
+            let mut root = repo.treebuilder(None).unwrap();
+            root.insert("devices", devices_tree.write().unwrap(), 0o040000).unwrap();
+            let tree = repo.find_tree(root.write().unwrap()).unwrap();
+            let author = git2::Signature::now("fixture", "fixture@example.invalid").unwrap();
+            repo.commit(Some("refs/heads/devices-test"), &author, &author, "test fixture", &tree, &[]).unwrap();
+        }
         let refs_before = std::process::Command::new("git").arg("--git-dir").arg(&remote).arg("show-ref").output().unwrap().stdout;
         let agent = temp.path().join("agent");
         fs::create_dir_all(&agent).unwrap();
