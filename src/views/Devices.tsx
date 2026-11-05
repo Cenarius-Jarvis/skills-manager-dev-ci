@@ -241,8 +241,12 @@ function InstructionForm({ device, onCreated }: { device: DeviceWithStatus; onCr
   const [skillName, setSkillName] = useState("");
   const [agentKey, setAgentKey] = useState("");
   const [creating, setCreating] = useState(false);
+  // The backend also rejects unsigned instructions; this is a UI affordance.
+  const instructionPublishingEnabled = false;
+  const instructionHintId = `instruct-hint-${device.id}`;
 
   const create = async () => {
+    if (!instructionPublishingEnabled) return;
     setCreating(true);
     try {
       await api.devicesCreateInstruction({
@@ -266,7 +270,7 @@ function InstructionForm({ device, onCreated }: { device: DeviceWithStatus; onCr
   return (
     <div className="mt-3 rounded-lg border border-border-subtle p-3" data-testid={`instruct-form-${device.id}`}>
       <div className="app-section-title text-[13px]">{t("devices.instructTitle")}</div>
-      <p className="mb-2 text-[12px] text-muted">{t("devices.instructHint")}</p>
+      <p id={instructionHintId} className="mb-2 text-[12px] text-muted">{t("devices.instructHint")}</p>
       <div className="flex flex-wrap items-end gap-2">
         <label className="flex flex-col gap-1">
           <span className="text-[12px] text-secondary">{t("devices.actionLabel")}</span>
@@ -336,7 +340,8 @@ function InstructionForm({ device, onCreated }: { device: DeviceWithStatus; onCr
           type="button"
           className="app-button-primary inline-flex h-8 items-center gap-2"
           onClick={() => void create()}
-          disabled={creating}
+          disabled={!instructionPublishingEnabled || creating}
+          aria-describedby={instructionHintId}
           data-testid={`instruct-submit-${device.id}`}
         >
           {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
