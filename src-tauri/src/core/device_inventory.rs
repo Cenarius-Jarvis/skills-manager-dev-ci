@@ -17,6 +17,22 @@ pub struct InventorySkill {
     pub symlink: bool,
 }
 
+/// Windows junctions and other reparse points must obey the same allowlist
+/// as symlinks even when Rust reports their file type as a directory.
+fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        metadata.file_type().is_symlink()
+            || (metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
+}
+
 /// Inspect one explicitly selected agent directory. Directory links are only
 /// followed into explicitly allowed roots; no file contents are read.
 pub fn inspect(agent_dir: &Path, allowed_roots: &[PathBuf]) -> Inventory {
@@ -64,10 +80,19 @@ pub fn inspect(agent_dir: &Path, allowed_roots: &[PathBuf]) -> Inventory {
                 continue;
             }
         };
-        if !ty.is_dir() && !ty.is_symlink() {
+        let path = entry.path();
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                report.complete = false;
+                report.warnings.push(format!("{name}: entry metadata unavailable"));
+                continue;
+            }
+        };
+        let linked = is_link_or_reparse(&metadata);
+        if !ty.is_dir() && !linked {
             continue;
         }
-        let path = entry.path();
         let resolved = match fs::canonicalize(&path) {
             Ok(resolved) => resolved,
             Err(_) => {
@@ -76,13 +101,13 @@ pub fn inspect(agent_dir: &Path, allowed_roots: &[PathBuf]) -> Inventory {
                 continue;
             }
         };
-        if ty.is_symlink() && !roots.iter().any(|root| resolved.starts_with(root)) {
+        if linked && !roots.iter().any(|root| resolved.starts_with(root)) {
             report.complete = false;
             report.warnings.push(format!("{name}: link target outside allowed roots"));
             continue;
         }
         if !resolved.is_dir() {
-            if ty.is_symlink() {
+            if linked {
                 report.complete = false;
                 report.warnings.push(format!("{name}: link target is not a directory"));
             }
@@ -90,14 +115,14 @@ pub fn inspect(agent_dir: &Path, allowed_roots: &[PathBuf]) -> Inventory {
         }
         let skill_file = resolved.join("SKILL.md");
         match fs::symlink_metadata(&skill_file) {
-            Ok(meta) if meta.file_type().is_file() => report.skills.push(InventorySkill {
-                name,
-                symlink: ty.is_symlink(),
-            }),
-            Ok(meta) if meta.file_type().is_symlink() => {
+            Ok(meta) if is_link_or_reparse(&meta) => {
                 report.complete = false;
                 report.warnings.push(format!("{name}: SKILL.md is a link and was skipped"));
             }
+            Ok(meta) if meta.file_type().is_file() => report.skills.push(InventorySkill {
+                name,
+                symlink: linked,
+            }),
             Ok(_) => {},
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {},
             Err(_) => {
@@ -152,4 +177,41 @@ mod tests {
         assert_eq!(result.warnings.len(), 2);
         assert_eq!(fs::read_to_string(foreign.join("SKILL.md")).unwrap(), "private");
     }
+    #[cfg(windows)]
+    #[test]
+    fn device_inventory_windows_junctions_require_allowed_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let agent = temp.path().join("agent");
+        let library = temp.path().join("library");
+        let foreign = temp.path().join("foreign");
+        fs::create_dir_all(&agent).unwrap();
+        fs::create_dir_all(library.join("skill")).unwrap();
+        fs::create_dir_all(&foreign).unwrap();
+        fs::write(library.join("skill/SKILL.md"), "test").unwrap();
+        fs::write(foreign.join("SKILL.md"), "private").unwrap();
+        junction::create(library.join("skill"), agent.join("approved")).unwrap();
+        junction::create(&foreign, agent.join("outside")).unwrap();
+        let denied = inspect(&agent, &[]);
+        assert!(!denied.complete);
+        assert!(denied.skills.is_empty());
+        assert_eq!(denied.warnings.len(), 2);
+        let result = inspect(&agent, &[library]);
+        assert!(!result.complete);
+        assert_eq!(result.skills.len(), 1);
+        assert_eq!(result.skills[0].name, "approved");
+        assert!(result.skills[0].symlink);
+        assert_eq!(result.warnings.len(), 1);
+        assert_eq!(fs::read_to_string(foreign.join("SKILL.md")).unwrap(), "private");
+
+        let vanished = temp.path().join("vanished");
+        fs::create_dir_all(&vanished).unwrap();
+        junction::create(&vanished, agent.join("broken")).unwrap();
+        fs::remove_dir(&vanished).unwrap();
+        let broken = inspect(&agent, &[]);
+        assert!(!broken.complete);
+        assert!(broken.skills.is_empty());
+        assert!(broken.warnings.iter().any(|warning| warning.contains("broken")));
+
+    }
+
 }
