@@ -22,5 +22,5 @@ jobs:
       - name: Install Linux runner libraries
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-      - name: Test signed commands and cross-process replay prevention
+      - name: Test signed commands with targeted replay conflicts
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib remote_auth_prototype -- --test-threads=1
