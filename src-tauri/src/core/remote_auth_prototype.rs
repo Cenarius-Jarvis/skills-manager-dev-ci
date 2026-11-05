@@ -200,6 +200,53 @@ mod tests {
         assert_eq!(count, 1);
     }
 
+    /// End-to-end fixture only: signed claim -> managed library -> fake agent.
+    #[test]
+    fn remote_auth_prototype_signed_managed_fixture_deploys_only_once() {
+        use crate::core::{central_repo, content_hash, native_managed_executor, skill_store::{SkillRecord, SkillStore}};
+        let _guard = central_repo::test_base_dir_lock();
+        struct ResetBase;
+        impl Drop for ResetBase {
+            fn drop(&mut self) { central_repo::set_test_base_dir_override(None); }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().join("manager");
+        let source = base.join("skills").join("sample");
+        let agent = temp.path().join("fake-agent");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&agent).unwrap();
+        std::fs::write(source.join("SKILL.md"), "# fake fixture").unwrap();
+        central_repo::set_test_base_dir_override(Some(base.clone()));
+        let _reset = ResetBase;
+        let store = SkillStore::new(&base.join("manager.db")).unwrap();
+        let hash = content_hash::hash_directory(&source).unwrap();
+        store.insert_skill(&SkillRecord {
+            id: "fixture-skill".into(), name: "sample".into(), description: None,
+            source_type: "git".into(), source_ref: Some("https://example.invalid/repo.git".into()),
+            source_ref_resolved: None, source_subpath: None, source_branch: None,
+            source_revision: None, remote_revision: None, central_path: source.to_string_lossy().into_owned(),
+            content_hash: Some(hash.clone()), enabled: true, created_at: 1, updated_at: 1,
+            status: "ok".into(), update_status: "up_to_date".into(), last_checked_at: None, last_check_error: None,
+        }).unwrap();
+        let (mut cmd, trust, signer) = fixture();
+        cmd.skill_id = "fixture-skill".into();
+        cmd.source_hash = hash.clone();
+        let approved = std::fs::canonicalize(&agent).unwrap();
+        cmd.root_fingerprint = hex::encode(Sha256::digest(approved.to_string_lossy().as_bytes()));
+        let signature = signer.sign(&canonical(&cmd).unwrap());
+
+        let mut conn = open_fixture(&temp.path().join("claims.db"));
+        // Real integration must obtain this mapping from an approved local store.
+        assert_eq!(cmd.root_fingerprint, hex::encode(Sha256::digest(approved.to_string_lossy().as_bytes())));
+        assert_eq!(cmd.source_hash, store.get_skill_by_id(&cmd.skill_id).unwrap().unwrap().content_hash.unwrap());
+        verify_and_claim(&mut conn, &cmd, signature.as_ref(), &trust, "dev-fixture", 200).unwrap();
+        let target = native_managed_executor::deploy_new_slot(&store, &cmd.skill_id, &cmd.agent_key, &approved).unwrap();
+        assert_eq!(std::fs::read_to_string(target.join("SKILL.md")).unwrap(), "# fake fixture");
+        assert_eq!(store.get_targets_for_skill(&cmd.skill_id).unwrap().len(), 1);
+        assert!(verify_and_claim(&mut conn, &cmd, signature.as_ref(), &trust, "dev-fixture", 200).is_err());
+        assert_eq!(store.get_targets_for_skill(&cmd.skill_id).unwrap().len(), 1);
+    }
+
     #[test]
     fn remote_auth_prototype_one_concurrent_claim_wins() {
         let temp = tempfile::tempdir().unwrap();
