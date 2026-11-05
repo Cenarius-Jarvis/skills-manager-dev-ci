@@ -132,6 +132,113 @@ mod tests {
         conn
     }
 
+    fn initialize_pairing(conn: &Connection, cmd: &CommandV1, trust: &TrustedKey) {
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS fixture_trusted_keys (
+            device_id TEXT NOT NULL, key_id TEXT NOT NULL, public_key BLOB NOT NULL,
+            state TEXT NOT NULL, PRIMARY KEY(device_id, key_id)
+        ); CREATE TABLE IF NOT EXISTS fixture_authorized_roots (
+            device_id TEXT NOT NULL, agent_key TEXT NOT NULL,
+            fingerprint TEXT NOT NULL, state TEXT NOT NULL,
+            PRIMARY KEY(device_id, agent_key)
+        );").unwrap();
+        conn.execute("INSERT INTO fixture_trusted_keys VALUES (?1, ?2, ?3, 'active')",
+            params![trust.device_id, trust.key_id, trust.public_key.as_slice()]).unwrap();
+        conn.execute("INSERT INTO fixture_authorized_roots VALUES (?1, ?2, ?3, 'active')",
+            params![cmd.device_id, cmd.agent_key, cmd.root_fingerprint]).unwrap();
+    }
+
+    /// Fixture only: local pairing lookup, signature and claim share a write transaction.
+    fn paired_claim(conn: &mut Connection, cmd: &CommandV1, signature: &[u8], now: i64) -> Result<()> {
+        use rusqlite::OptionalExtension;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let key: Option<Vec<u8>> = tx.query_row(
+            "SELECT public_key FROM fixture_trusted_keys WHERE device_id = ?1 AND key_id = ?2 AND state = 'active'",
+            params![cmd.device_id, cmd.key_id], |row| row.get(0)).optional()?;
+        let bytes = key.context("key not trusted")?;
+        let public_key: [u8; 32] = bytes.try_into().map_err(|_| anyhow::anyhow!("invalid public key"))?;
+        let fingerprint: Option<String> = tx.query_row(
+            "SELECT fingerprint FROM fixture_authorized_roots WHERE device_id = ?1 AND agent_key = ?2 AND state = 'active'",
+            params![cmd.device_id, cmd.agent_key], |row| row.get(0)).optional()?;
+        if fingerprint.as_deref() != Some(cmd.root_fingerprint.as_str()) { bail!("root not authorized"); }
+        let trust = TrustedKey { key_id: cmd.key_id.clone(), device_id: cmd.device_id.clone(), public_key };
+        let hash = validate_signed_command(cmd, signature, &trust, &cmd.device_id, now)?;
+        insert_claim(&tx, cmd, &hash)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Revocation conservatively invalidates every pending claim on that fixture device.
+    fn revoke_fixture_key(conn: &mut Connection, device_id: &str, key_id: &str) -> Result<()> {
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute("UPDATE fixture_trusted_keys SET state = 'revoked' WHERE device_id = ?1 AND key_id = ?2",
+            params![device_id, key_id])?;
+        tx.execute("UPDATE fixture_command_claims SET state = 'revoked_after_claim' WHERE device_id = ?1 AND state = 'claimed'",
+            params![device_id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    #[test]
+    fn remote_auth_prototype_pairing_requires_matching_local_trust_and_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut conn = open_fixture(&temp.path().join("commands.db"));
+        let (cmd, trust, signer) = fixture();
+        initialize_pairing(&conn, &cmd, &trust);
+        let signature = signer.sign(&canonical(&cmd).unwrap());
+        let mut changed = cmd.clone();
+        changed.root_fingerprint = "c".repeat(64);
+        let changed_signature = signer.sign(&canonical(&changed).unwrap());
+        assert!(paired_claim(&mut conn, &changed, changed_signature.as_ref(), 200).is_err());
+        assert!(paired_claim(&mut conn, &cmd, &[], 200).is_err());
+        paired_claim(&mut conn, &cmd, signature.as_ref(), 200).unwrap();
+        assert!(paired_claim(&mut conn, &cmd, signature.as_ref(), 200).is_err());
+        revoke_fixture_key(&mut conn, &cmd.device_id, &cmd.key_id).unwrap();
+        let state: String = conn.query_row("SELECT state FROM fixture_command_claims WHERE command_id = ?1",
+            params![cmd.command_id], |row| row.get(0)).unwrap();
+        assert_eq!(state, "revoked_after_claim");
+        let mut new_cmd = cmd.clone();
+        new_cmd.command_id = uuid::Uuid::new_v4().to_string();
+        let new_signature = signer.sign(&canonical(&new_cmd).unwrap());
+        assert!(paired_claim(&mut conn, &new_cmd, new_signature.as_ref(), 200).is_err());
+    }
+
+    #[test]
+    fn remote_auth_prototype_pairing_revoke_and_claim_serialize() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = temp.path().join("commands.db");
+        let conn = open_fixture(&db);
+        let (cmd, trust, signer) = fixture();
+        initialize_pairing(&conn, &cmd, &trust);
+        drop(conn);
+        let signature = signer.sign(&canonical(&cmd).unwrap()).as_ref().to_vec();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let db_a = db.clone();
+        let cmd_a = cmd.clone();
+        let gate_a = barrier.clone();
+        let claim = std::thread::spawn(move || {
+            let mut conn = open_fixture(&db_a);
+            gate_a.wait();
+            paired_claim(&mut conn, &cmd_a, &signature, 200).is_ok()
+        });
+        let db_b = db.clone();
+        let cmd_b = cmd.clone();
+        let gate_b = barrier.clone();
+        let revoke = std::thread::spawn(move || {
+            let mut conn = open_fixture(&db_b);
+            gate_b.wait();
+            revoke_fixture_key(&mut conn, &cmd_b.device_id, &cmd_b.key_id).unwrap();
+        });
+        let claimed = claim.join().unwrap();
+        revoke.join().unwrap();
+        let conn = open_fixture(&db);
+        let mut stmt = conn.prepare("SELECT state FROM fixture_command_claims WHERE command_id = ?1").unwrap();
+        let mut rows = stmt.query(params![cmd.command_id]).unwrap();
+        match rows.next().unwrap() {
+            Some(row) => { assert!(claimed); assert_eq!(row.get::<_, String>(0).unwrap(), "revoked_after_claim"); }
+            None => assert!(!claimed),
+        }
+    }
+
     #[test]
     fn remote_auth_prototype_accepts_once_even_after_reopen() {
         let temp = tempfile::tempdir().unwrap();
