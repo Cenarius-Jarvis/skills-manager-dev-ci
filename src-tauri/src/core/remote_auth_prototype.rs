@@ -189,9 +189,14 @@ mod tests {
                 .args(["--exact", "core::remote_auth_prototype::tests::remote_auth_prototype_subprocess_worker"])
                 .env("SM_AUTH_FIXTURE", &fixture_path)
                 .env("SM_AUTH_EXPECT", expectation)
-                .status().unwrap();
-            assert!(status.success(), "independent verifier process failed");
+                .output().unwrap();
+            assert!(status.status.success(), "independent verifier process failed");
+            assert!(String::from_utf8_lossy(&status.stdout).contains("1 passed"),
+                "verifier process did not run exactly one worker test");
         }
+        let conn = open_fixture(&db);
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM fixture_command_claims", [], |row| row.get(0)).unwrap();
+        assert_eq!(count, 1);
     }
 
     #[test]
