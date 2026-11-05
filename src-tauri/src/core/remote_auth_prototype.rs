@@ -464,7 +464,7 @@ mod tests {
         std::fs::write(&target, b"do-not-modify").unwrap();
         let (mut conn, cmd, signature) = interrupted_fixture(temp.path());
         assert_eq!(block_interrupted_fixture(&mut conn, &cmd.command_id, &root).unwrap(), "target_exists");
-        assert_eq!(std::fs::read(&target).unwrap(), b"do-not-modify");
+        assert_eq!(std::fs::read(&target).unwrap().as_slice(), b"do-not-modify");
         assert!(paired_begin(&mut conn, &cmd, &signature, "dev-fixture", 200).is_err());
     }
 
@@ -480,7 +480,7 @@ mod tests {
         std::os::unix::fs::symlink(&external, root.join("sample")).unwrap();
         let (mut conn, cmd, _) = interrupted_fixture(temp.path());
         assert_eq!(block_interrupted_fixture(&mut conn, &cmd.command_id, &root).unwrap(), "unsafe_target");
-        assert_eq!(std::fs::read(external.join("safe.txt")).unwrap(), b"safe");
+        assert_eq!(std::fs::read(external.join("safe.txt")).unwrap().as_slice(), b"safe");
     }
 
     #[cfg(windows)]
@@ -495,7 +495,7 @@ mod tests {
         junction::create(&external, root.join("sample")).unwrap();
         let (mut conn, cmd, _) = interrupted_fixture(temp.path());
         assert_eq!(block_interrupted_fixture(&mut conn, &cmd.command_id, &root).unwrap(), "unsafe_target");
-        assert_eq!(std::fs::read(external.join("safe.txt")).unwrap(), b"safe");
+        assert_eq!(std::fs::read(external.join("safe.txt")).unwrap().as_slice(), b"safe");
     }
 
     #[test]
