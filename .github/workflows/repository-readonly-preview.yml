@@ -26,6 +26,8 @@ jobs:
         run: npx vite build --config vite.repository-preview.config.ts
       - name: Test snapshot backend
         run: cargo test --manifest-path src-tauri/Cargo.toml --features isolated-repo-preview --lib repository_sources -- --test-threads=1
+      - name: Test preview temporary-store lifetime
+        run: cargo test --manifest-path src-tauri/Cargo.toml --features isolated-repo-preview --bin repository-readonly-preview -- --test-threads=1
       - name: Build standalone preview
         run: cargo build --manifest-path src-tauri/Cargo.toml --release --features isolated-repo-preview --bin repository-readonly-preview
       - name: Verify executable checksum
