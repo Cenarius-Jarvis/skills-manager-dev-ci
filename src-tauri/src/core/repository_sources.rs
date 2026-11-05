@@ -107,6 +107,7 @@ fn clone_bare(url: &str, branch: &str, path: &Path) -> Result<()> {
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes -o ConnectTimeout=15")
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(not(feature = "isolated-repo-preview"))]
     for (key, value) in credential_env_for_url(url) { cmd.env(key, value); }
     let mut child = cmd.spawn().context("could not start Git")?;
     let started = Instant::now();
