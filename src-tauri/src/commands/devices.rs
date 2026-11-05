@@ -45,6 +45,10 @@ pub struct DevicesPage {
     pub channel: ChannelStatus,
     pub devices: Vec<DeviceWithStatus>,
     pub instructions: Vec<DeviceInstructionRow>,
+    /// None means the current page came from the local projection without a
+    /// channel fetch. Some contains all validation/import warnings from the
+    /// refresh, including an empty list when no warnings were reported.
+    pub snapshot_warnings: Option<Vec<String>>,
 }
 
 fn input_err(err: anyhow::Error) -> AppError {
@@ -112,6 +116,7 @@ fn build_page(store: &SkillStore) -> Result<DevicesPage, AppError> {
         channel: channel_config_status(store)?,
         devices: devices_out,
         instructions,
+        snapshot_warnings: None,
     })
 }
 
@@ -129,8 +134,19 @@ pub fn refresh_channel_internal(store: &SkillStore) -> Result<DevicesPage, AppEr
     let branch = devices::channel_branch(store);
     let snapshot =
         with_retry(|| devices::fetch_channel_snapshot(&url, &branch)).map_err(git_err)?;
-    devices::import_snapshot(store, &snapshot).map_err(|e| AppError::db(e))?;
-    build_page(store)
+    page_from_snapshot(store, &snapshot)
+}
+
+/// Preserve warnings from both snapshot parsing and import validation. This
+/// does not claim that an additive local projection is a complete inventory.
+fn page_from_snapshot(
+    store: &SkillStore,
+    snapshot: &devices::ChannelSnapshot,
+) -> Result<DevicesPage, AppError> {
+    let summary = devices::import_snapshot(store, snapshot).map_err(|e| AppError::db(e))?;
+    let mut page = build_page(store)?;
+    page.snapshot_warnings = Some(summary.warnings);
+    Ok(page)
 }
 
 pub fn set_channel_config_internal(
@@ -396,4 +412,60 @@ pub async fn devices_inspect_local(
         let roots: Vec<std::path::PathBuf> = allowed_roots.iter().map(|root| std::path::PathBuf::from(root.as_str())).collect();
         crate::core::device_inventory::inspect(std::path::Path::new(&path), &roots)
     }).await.map_err(|_| "inventory inspection failed".to_string())
+}
+
+#[cfg(test)]
+mod snapshot_warning_tests {
+    use super::*;
+    use crate::core::devices::{ChannelSnapshot, DeviceInstruction, DeviceReceipt};
+
+    #[test]
+    fn device_page_preserves_fetch_and_import_warnings_and_unknown_cache_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SkillStore::new(&dir.path().join("test.db")).unwrap();
+        // A cached-only page has not checked the channel in this request.
+        assert!(get_page_internal(&store).unwrap().snapshot_warnings.is_none());
+
+        let instruction = DeviceInstruction {
+            schema: devices::DEVICE_PROTOCOL_VERSION,
+            id: "inst-fixture".into(),
+            device_id: "dev-fixture".into(),
+            action: "deploy".into(),
+            skill_url: Some("https://example.com/fixture.git".into()),
+            skill_branch: None,
+            skill_subpath: None,
+            skill_name: Some("fixture".into()),
+            agent_key: "codex".into(),
+            created_at: 1,
+            expires_at: None,
+            created_by: None,
+        };
+        // Valid receipt syntax but a wrong device: import must refuse it and
+        // the page must show this warning in addition to parse warnings.
+        let receipt = DeviceReceipt {
+            schema: devices::DEVICE_PROTOCOL_VERSION,
+            instruction_id: "inst-fixture".into(),
+            device_id: "dev-other".into(),
+            status: "success".into(),
+            reason: None,
+            instruction_commit: Some("abc".into()),
+            detail: None,
+            executor_version: None,
+            finished_at: 2,
+        };
+        let snapshot = ChannelSnapshot {
+            instructions: vec![(instruction, "abc".into())],
+            receipts: vec![(receipt, "def".into())],
+            warnings: vec!["fixtures/state.json: invalid".into()],
+            ..Default::default()
+        };
+        let page = page_from_snapshot(&store, &snapshot).unwrap();
+        let warnings = page.snapshot_warnings.unwrap();
+        assert!(warnings.iter().any(|w| w.contains("fixtures/state.json")));
+        assert!(warnings.iter().any(|w| w.contains("receipt inst-fixture: refused")));
+        assert_ne!(page.instructions[0].state, "success");
+
+        let clean = page_from_snapshot(&store, &ChannelSnapshot::default()).unwrap();
+        assert_eq!(clean.snapshot_warnings, Some(Vec::new()));
+    }
 }
