@@ -781,6 +781,19 @@ enum DevicesCommand {
         #[arg(long = "allowed-root")]
         allowed_roots: Vec<PathBuf>,
     },
+    /// Publish a minimal registered-library inventory, without running the executor.
+    /// Review the destination and skill names before using a real channel.
+    ReportLibrary {
+        /// Explicitly selected private device channel remote.
+        #[arg(long)]
+        url: String,
+        /// Control channel branch.
+        #[arg(long)]
+        branch: Option<String>,
+        /// Explicit device ID; this command does not generate one.
+        #[arg(long)]
+        device_id: String,
+    },
     /// Print this machine's device identity (id, name and channel settings).
     Whoami,
     /// One-shot device executor: pull instructions from the control channel,
@@ -823,6 +836,13 @@ struct DevicesWhoami {
 fn run_devices(args: DevicesArgs, store: &SkillStore, json: bool) -> anyhow::Result<()> {
     match args.command {
         DevicesCommand::Inventory { .. } => unreachable!("handled before the store is opened"),
+        DevicesCommand::ReportLibrary { url, branch, device_id } => {
+            let report = devices::library_report_from_store(store, &device_id, chrono::Utc::now().timestamp())?;
+            let branch = branch.as_deref().unwrap_or(devices::DEFAULT_CHANNEL_BRANCH);
+            devices::publish_library_report(&url, branch, &report)?;
+            print_json(&report, json);
+            Ok(())
+        }
         DevicesCommand::Whoami => {
             let report = DevicesWhoami {
                 device_id: devices::local_device_id(store)?,
