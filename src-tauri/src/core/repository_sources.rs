@@ -192,8 +192,102 @@ pub fn refresh_source(store: &SkillStore, source_id: &str) -> Result<RepositoryS
     devices::validate_branch_name(&source.branch)?;
     let root = normalize_skills_root(&source.skills_root)?;
     if root != source.skills_root { bail!("invalid stored skills root"); }
+    fetch_and_save(store, &source, &source.url)
+}
+
+fn fetch_and_save(store: &SkillStore, source: &RepositorySource, url: &str) -> Result<RepositorySnapshot> {
     let start = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos().min(i64::MAX as u128) as i64;
-    let snapshot = read_snapshot(&source.url, &source, start)?;
+    let snapshot = read_snapshot(url, source, start)?;
     store.save_repository_snapshot(&snapshot)?;
-    store.get_repository_snapshot(source_id)?.context("source removed during refresh")
+    store.get_repository_snapshot(&source.id)?.context("source removed during refresh")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_fake_repository(path: &Path, names: &[&str], symlink: bool) -> Result<String> {
+        let repo = if path.exists() { git2::Repository::open_bare(path)? }
+            else { git2::Repository::init_bare(path)? };
+        let blob = repo.blob(b"fixture contents")?;
+        let mut skills = repo.treebuilder(None)?;
+        for name in names {
+            let mut skill = repo.treebuilder(None)?;
+            skill.insert("SKILL.md", blob, 0o100644)?;
+            skills.insert(name, skill.write()?, 0o040000)?;
+        }
+        if symlink { skills.insert("unsafe-link", blob, 0o120000)?; }
+        let skills_id = skills.write()?;
+        let mut root = repo.treebuilder(None)?;
+        root.insert("skills", skills_id, 0o040000)?;
+        let root_id = root.write()?;
+        let tree = repo.find_tree(root_id)?;
+        let sig = git2::Signature::now("fixture", "fixture@example.invalid")?;
+        let old = repo.find_reference("refs/heads/main").ok()
+            .and_then(|r| r.target())
+            .map(|oid| repo.find_commit(oid)).transpose()?;
+        let parents: Vec<&git2::Commit<'_>> = old.iter().collect();
+        let commit = repo.commit(Some("refs/heads/main"), &sig, &sig, "fixture", &tree, &parents)?;
+        repo.set_head("refs/heads/main")?;
+        Ok(commit.to_string())
+    }
+
+    #[test]
+    fn repository_sources_validate_urls_and_roots() {
+        assert!(validate_source_url("https://github.com/example/example.git").is_ok());
+        assert!(validate_source_url("git@github-alias:example/example.git").is_ok());
+        assert!(validate_source_url("ssh://git@github.com/example/example.git").is_ok());
+        for url in ["https://token@github.com/a/b", "https://u:p@github.com/a/b",
+            "https://github.com/a/b?token=secret", "file:///tmp/repo", "-unsafe", "git@host:../secret"] {
+            assert!(validate_source_url(url).is_err());
+        }
+        for root in ["../other", "/abs", "x/../y", "x\\\\y", "x//y", ".git", "x:y"] {
+            assert!(normalize_skills_root(root).is_err(), "{root}");
+        }
+        assert_eq!(normalize_skills_root("skills/example").unwrap(), "skills/example");
+    }
+
+    #[test]
+    fn repository_sources_two_repos_are_isolated_and_failure_preserves_cache() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let repo_a = tmp.path().join("one.git");
+        let repo_b = tmp.path().join("two.git");
+        let head_a = write_fake_repository(&repo_a, &["shared", "only-a"], false)?;
+        let head_b = write_fake_repository(&repo_b, &["shared", "only-b"], false)?;
+        let db = tmp.path().join("state.db");
+        let store = SkillStore::new(&db)?;
+        let source = |id: &str| RepositorySource {
+            id: id.to_string(), name: id.to_string(), device_id: None,
+            url: "https://github.com/example/fixture.git".into(), branch: "main".into(),
+            skills_root: "skills".into(), created_at: 1,
+        };
+        let a = source("repo-a");
+        let b = source("repo-b");
+        store.insert_repository_source(&a)?;
+        store.insert_repository_source(&b)?;
+        let first = fetch_and_save(&store, &a, repo_a.to_str().unwrap())?;
+        let second = fetch_and_save(&store, &b, repo_b.to_str().unwrap())?;
+        assert_eq!(first.head_commit, head_a);
+        assert_eq!(second.head_commit, head_b);
+        assert_eq!(first.skills.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["only-a", "shared"]);
+        assert_eq!(second.skills.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["only-b", "shared"]);
+        let new_head_a = write_fake_repository(&repo_a, &["new-a", "shared"], false)?;
+        let updated = fetch_and_save(&store, &a, repo_a.to_str().unwrap())?;
+        assert_eq!(updated.head_commit, new_head_a);
+        assert_eq!(store.get_repository_snapshot(&b.id)?.unwrap().head_commit, head_b);
+        write_fake_repository(&repo_a, &["shared"], true)?;
+        assert!(fetch_and_save(&store, &a, repo_a.to_str().unwrap()).is_err());
+        assert_eq!(store.get_repository_snapshot(&a.id)?.unwrap().head_commit, new_head_a);
+        assert!(fetch_and_save(&store, &a, tmp.path().join("unavailable.git").to_str().unwrap()).is_err());
+        assert_eq!(store.get_repository_snapshot(&a.id)?.unwrap().head_commit, new_head_a);
+        drop(store);
+        let reopened = SkillStore::new(&db)?;
+        assert_eq!(reopened.list_repository_sources()?.len(), 2);
+        assert_eq!(reopened.get_repository_snapshot(&a.id)?.unwrap().head_commit, new_head_a);
+        assert!(reopened.delete_repository_source(&a.id)?);
+        assert!(reopened.get_repository_snapshot(&a.id)?.is_none());
+        assert!(reopened.get_repository_snapshot(&b.id)?.is_some());
+        assert!(repo_a.exists() && repo_b.exists());
+        Ok(())
+    }
 }
