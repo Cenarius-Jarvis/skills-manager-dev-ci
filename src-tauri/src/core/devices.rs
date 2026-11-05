@@ -728,6 +728,12 @@ pub fn publish_instructions(
     manifest: Option<&DeviceManifest>,
     instructions: &[DeviceInstruction],
 ) -> Result<String> {
+    // Only fixture tests may publish the legacy unsigned protocol. Production
+    // may still publish a device manifest when there are no instructions.
+    #[cfg(not(test))]
+    if !instructions.is_empty() {
+        bail!("unsigned remote instruction publication is disabled");
+    }
     for inst in instructions {
         validate_instruction(inst)?;
     }
