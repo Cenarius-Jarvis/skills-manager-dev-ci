@@ -233,6 +233,29 @@ mod tests {
     }
 
     #[test]
+    fn remote_auth_prototype_pairing_rolls_back_if_root_already_exists() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut conn = open_fixture(&temp.path().join("commands.db"));
+        let (_, trust, _) = fixture();
+        conn.execute("INSERT INTO fixture_authorized_roots VALUES (?1, ?2, ?3, 'active')",
+            params!["dev-fixture", "codex", "b".repeat(64)]).unwrap();
+        assert!(initialize_pairing(&mut conn, &trust).is_err());
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM fixture_trusted_keys", [], |row| row.get(0)).unwrap();
+        assert_eq!(count, 0, "failed pairing must not retain a key");
+    }
+
+    #[test]
+    fn remote_auth_prototype_pairing_rejects_other_local_device() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut conn = open_fixture(&temp.path().join("commands.db"));
+        let (_, mut trust, _) = fixture();
+        trust.device_id = "not-the-local-device".into();
+        assert!(initialize_pairing(&mut conn, &trust).is_err());
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM fixture_trusted_keys", [], |row| row.get(0)).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
     fn remote_auth_prototype_pairing_requires_matching_local_trust_and_root() {
         let temp = tempfile::tempdir().unwrap();
         let mut conn = open_fixture(&temp.path().join("commands.db"));
