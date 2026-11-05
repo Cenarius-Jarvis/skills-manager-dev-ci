@@ -6,6 +6,19 @@ on:
 permissions:
   contents: read
 jobs:
+  frontend:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx vitest run src/views/Devices.test.tsx
+      - run: npm run build
+      - run: node scripts/check-i18n.mjs
   test:
     strategy:
       fail-fast: false
@@ -24,8 +37,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - name: Test executor guard and legacy behavior in fixtures only
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib device_executor -- --test-threads=1
-      - name: Test CLI blocks unsigned run before store initialization
-        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --bin skills-manager-cli executor_unsigned_run -- --test-threads=1
+      - name: Test UI command boundary blocks unsigned instructions
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib device_unsigned_instruction -- --test-threads=1
+      - name: Test CLI blocks unsigned run and publication before side effects
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --bin skills-manager-cli executor_unsigned_ -- --test-threads=1
       - name: Test CLI read-only preview remains available
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --bin skills-manager-cli executor_dry_run -- --test-threads=1
       - name: Check production CLI build
