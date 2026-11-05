@@ -55,6 +55,8 @@ pub struct ExecutorConfig {
     pub branch: String,
     pub device_id: String,
     pub agents: Vec<AgentMapping>,
+    /// Only linked inventory entries resolving under these explicit roots may be read.
+    pub inventory_allowed_roots: Vec<PathBuf>,
     pub max_instructions: usize,
     pub dry_run: bool,
 }
@@ -353,35 +355,90 @@ fn make_receipt(
     }
 }
 
-fn scan_agent_skills(agent_root: &Path) -> Vec<AgentSkillReport> {
+/// Treat Windows junctions and reparse points as links even when their file
+/// type is reported as a directory or regular file.
+fn is_inventory_link(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        metadata.file_type().is_symlink()
+            || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
+}
+
+/// A scan must be complete before it may replace the last published report.
+/// Refusing an uninspectable entry is conservative: treating it as absent
+/// would make a remote device appear to have lost deployed skills.
+fn canonical_inventory_roots(roots: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    roots.iter().map(|root| {
+        let canonical = std::fs::canonicalize(root).context("allowed inventory root is unavailable")?;
+        if !std::fs::metadata(&canonical).context("allowed inventory root metadata is unavailable")?.is_dir() {
+            bail!("allowed inventory root is not a directory");
+        }
+        Ok(canonical)
+    }).collect()
+}
+
+fn scan_agent_skills(agent_root: &Path, canonical_roots: &[PathBuf]) -> Result<Vec<AgentSkillReport>> {
     let mut reports = Vec::new();
-    let Ok(entries) = std::fs::read_dir(agent_root) else {
-        return reports;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() || path.is_symlink() {
-            continue;
+    let entries = std::fs::read_dir(agent_root).context("agent directory is unavailable")?;
+    for entry in entries {
+        let entry = entry.context("agent entry is unavailable")?;
+        let name = entry.file_name().into_string().map_err(|_| anyhow::anyhow!("agent entry name is not UTF-8"))?;
+        let entry_path = entry.path();
+        let entry_meta = std::fs::symlink_metadata(&entry_path)
+            .context("agent entry metadata is unavailable")?;
+        let target = if is_inventory_link(&entry_meta) {
+            // Resolve before the boundary test, so traversal and links nested
+            // inside an allowed root cannot escape its canonical location.
+            let resolved = std::fs::canonicalize(&entry_path)
+                .with_context(|| format!("agent entry {name:?} link is unavailable"))?;
+            if !canonical_roots.iter().any(|root| resolved.starts_with(root)) {
+                bail!("agent entry {name:?} link target is outside allowed inventory roots");
+            }
+            let target_meta = std::fs::metadata(&resolved).context("linked directory metadata is unavailable")?;
+            if !target_meta.is_dir() {
+                bail!("agent entry {name:?} link target is not a directory");
+            }
+            resolved
+        } else {
+            if !entry_meta.file_type().is_dir() { continue; }
+            entry_path
+        };
+        let skill_md = target.join("SKILL.md");
+        let meta = match std::fs::symlink_metadata(&skill_md) {
+            Ok(meta) => meta,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => return Err(err).context("SKILL.md cannot be inspected"),
+        };
+        if is_inventory_link(&meta) {
+            bail!("agent entry {name:?} has a linked SKILL.md; inventory incomplete");
         }
-        let skill_md = path.join("SKILL.md");
-        if !skill_md.is_file() {
-            continue;
-        }
-        let content_hash = hash_file(&skill_md).ok();
-        let deployed_at = entry
-            .metadata()
-            .and_then(|m| m.modified())
-            .ok()
+        if !meta.file_type().is_file() { continue; }
+        let content_hash = Some(hash_file(&skill_md).context("SKILL.md cannot be hashed")?);
+        let deployed_at = entry.metadata().and_then(|m| m.modified()).ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64);
-        reports.push(AgentSkillReport {
-            name: entry.file_name().to_string_lossy().to_string(),
-            content_hash,
-            deployed_at,
-        });
+        reports.push(AgentSkillReport { name, content_hash, deployed_at });
     }
     reports.sort_by(|a, b| a.name.cmp(&b.name));
-    reports
+    Ok(reports)
+}
+
+fn collect_agent_states(mappings: &[AgentMapping], allowed_roots: &[PathBuf]) -> Result<Vec<AgentStateReport>> {
+    // Every explicitly configured root must be available. Otherwise a broken
+    // mapping could be mistaken for a definitive empty inventory.
+    let canonical_roots = canonical_inventory_roots(allowed_roots)?;
+    mappings.iter().map(|mapping| {
+        let skills = scan_agent_skills(&mapping.dir, &canonical_roots)
+            .with_context(|| format!("agent {:?} inventory incomplete", mapping.key))?;
+        Ok(AgentStateReport { key: mapping.key.clone(), skills })
+    }).collect()
 }
 
 /// Runs one executor cycle. On entry, an exclusive lock is taken for the
@@ -556,24 +613,25 @@ pub fn run_once(config: &ExecutorConfig) -> Result<ExecutorRunReport> {
     // State report: what this executor manages right now. Started-but-not-
     // finished instructions (a crashed previous run) are reported as
     // executing so the UI does not quietly forget them.
-    let agents = config
-        .agents
-        .iter()
-        .map(|m| AgentStateReport {
-            key: m.key.clone(),
-            skills: scan_agent_skills(&m.dir),
-        })
-        .collect();
-    let state = DeviceStateReport {
-        schema: devices::DEVICE_PROTOCOL_VERSION,
-        device_id: config.device_id.clone(),
-        reported_at: now,
-        executing: journal.unfinished_ids(),
-        agents,
+    // Incomplete scans must never replace a prior good report with a partial
+    // or empty inventory. Receipts are still delivered; the previous report's
+    // timestamp stays unchanged and will age out in the device UI.
+    let state = match collect_agent_states(&config.agents, &config.inventory_allowed_roots) {
+        Ok(agents) => Some(DeviceStateReport {
+            schema: devices::DEVICE_PROTOCOL_VERSION,
+            device_id: config.device_id.clone(),
+            reported_at: now,
+            executing: journal.unfinished_ids(),
+            agents,
+        }),
+        Err(err) => {
+            report.warnings.push(format!("State report not published: {err:#}"));
+            None
+        }
     };
 
     for attempt in 0..3 {
-        match devices::publish_executor_update(&config.url, &config.branch, &receipts, Some(&state))
+        match devices::publish_executor_update(&config.url, &config.branch, &receipts, state.as_ref())
         {
             Ok(_) => {
                 report.published = true;
@@ -610,6 +668,166 @@ fn append_with_receipt(
 mod tests {
     use super::*;
     use crate::core::central_repo;
+
+    #[test]
+    fn inventory_requires_all_configured_agent_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let good = temp.path().join("good");
+        std::fs::create_dir_all(good.join("skill")).unwrap();
+        std::fs::write(good.join("skill").join("SKILL.md"), b"example").unwrap();
+        std::fs::create_dir_all(good.join("not-a-skill")).unwrap();
+        let mappings = vec![
+            AgentMapping { key: "codex".into(), dir: good },
+            AgentMapping { key: "other".into(), dir: temp.path().join("missing") },
+        ];
+        let one = collect_agent_states(&mappings[..1], &[]).unwrap();
+        assert_eq!(one[0].skills.len(), 1);
+        assert_eq!(one[0].skills[0].name, "skill");
+        assert!(collect_agent_states(&mappings, &[]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inventory_refuses_linked_entries_instead_of_silently_omitting_them() {
+        let temp = tempfile::tempdir().unwrap();
+        let agent = temp.path().join("agent");
+        let skill = temp.path().join("skill");
+        std::fs::create_dir_all(&agent).unwrap();
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(skill.join("SKILL.md"), b"example").unwrap();
+        std::os::unix::fs::symlink(&skill, agent.join("linked")).unwrap();
+        assert!(scan_agent_skills(&agent, &[]).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn inventory_refuses_windows_junctions_instead_of_reading_foreign_tree() {
+        let temp = tempfile::tempdir().unwrap();
+        let agent = temp.path().join("agent");
+        let foreign = temp.path().join("foreign");
+        std::fs::create_dir_all(&agent).unwrap();
+        std::fs::create_dir_all(&foreign).unwrap();
+        std::fs::write(foreign.join("SKILL.md"), b"fixture").unwrap();
+        junction::create(&foreign, agent.join("linked")).unwrap();
+        assert!(scan_agent_skills(&agent, &[]).is_err());
+    }
+
+    /// Two simulated machines exchange reports using a temporary bare Git
+    /// repository; no real device, network, agent, or deployment is involved.
+    #[test]
+    fn inventory_two_device_channel_preserves_last_good_state_on_scan_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let remote = temp.path().join("channel.git");
+        assert!(std::process::Command::new("git").args(["init", "--bare"])
+            .arg(&remote).output().unwrap().status.success());
+        let remote = remote.to_string_lossy().to_string();
+        let mk_agent = |device: &str, name: &str| {
+            let dir = temp.path().join(device);
+            std::fs::create_dir_all(dir.join(name)).unwrap();
+            std::fs::write(dir.join(name).join("SKILL.md"), b"fixture").unwrap();
+            AgentMapping { key: "codex".into(), dir }
+        };
+        let first = mk_agent("main", "shared");
+        let second = mk_agent("second", "remote-only");
+        let state = |id: &str, timestamp: i64, mapping: AgentMapping| DeviceStateReport {
+            schema: devices::DEVICE_PROTOCOL_VERSION,
+            device_id: id.into(),
+            reported_at: timestamp,
+            executing: vec![],
+            agents: collect_agent_states(&[mapping], &[]).unwrap(),
+        };
+        devices::publish_state_report(&remote, "test-channel", &state("dev-main", 1000, first)).unwrap();
+        devices::publish_state_report(&remote, "test-channel", &state("dev-remote", 2000, second)).unwrap();
+        let snapshot = devices::fetch_channel_snapshot(&remote, "test-channel").unwrap();
+        assert!(snapshot.warnings.is_empty(), "{:?}", snapshot.warnings);
+        assert_eq!(snapshot.states.len(), 2);
+
+        let store = crate::core::skill_store::SkillStore::new(&temp.path().join("projection.db")).unwrap();
+        devices::import_snapshot(&store, &snapshot).unwrap();
+        let main = store.get_device_skill_records(Some("dev-main")).unwrap();
+        let remote_records = store.get_device_skill_records(Some("dev-remote")).unwrap();
+        assert_eq!(main.len(), 1);
+        assert_eq!(main[0].skill_name, "shared");
+        assert_eq!(remote_records.len(), 1);
+        assert_eq!(remote_records[0].skill_name, "remote-only");
+
+        // A failure on the simulated remote machine suppresses a new state,
+        // while a receipt can still travel through the same channel.
+        let inaccessible = AgentMapping { key: "codex".into(), dir: temp.path().join("missing") };
+        assert!(collect_agent_states(&[inaccessible], &[]).is_err());
+        let receipt = DeviceReceipt {
+            schema: devices::DEVICE_PROTOCOL_VERSION,
+            instruction_id: "inst-fixture".into(), device_id: "dev-remote".into(),
+            status: "failed".into(), reason: Some("conflict".into()),
+            instruction_commit: Some("abc".into()), detail: None,
+            executor_version: None, finished_at: 2500,
+        };
+        devices::publish_executor_update(&remote, "test-channel", &[receipt], None).unwrap();
+        let refreshed = devices::fetch_channel_snapshot(&remote, "test-channel").unwrap();
+        assert_eq!(refreshed.receipts.len(), 1);
+        let old_remote = refreshed.states.iter().find(|s| s.device_id == "dev-remote").unwrap();
+        assert_eq!(old_remote.reported_at, 2000);
+        assert_eq!(old_remote.agents[0].skills[0].name, "remote-only");
+        devices::import_snapshot(&store, &refreshed).unwrap();
+        assert_eq!(store.get_device_skill_records(Some("dev-remote")).unwrap()[0].skill_name, "remote-only");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inventory_allows_only_canonical_targets_inside_explicit_roots() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let agent = temp.path().join("agent");
+        let allowed = temp.path().join("library");
+        let sibling = temp.path().join("library-other");
+        let approved = allowed.join("skill");
+        let foreign = sibling.join("skill");
+        std::fs::create_dir_all(&agent).unwrap();
+        std::fs::create_dir_all(&approved).unwrap();
+        std::fs::create_dir_all(&foreign).unwrap();
+        std::fs::write(approved.join("SKILL.md"), b"allowed").unwrap();
+        std::fs::write(foreign.join("SKILL.md"), b"foreign").unwrap();
+        symlink(&approved, agent.join("linked")).unwrap();
+        let roots = canonical_inventory_roots(&[allowed.clone()]).unwrap();
+        assert!(scan_agent_skills(&agent, &[]).is_err(), "default denies links");
+        let good = scan_agent_skills(&agent, &roots).unwrap();
+        assert_eq!(good.len(), 1);
+        assert_eq!(good[0].name, "linked");
+        std::fs::remove_file(agent.join("linked")).unwrap();
+        symlink(&foreign, agent.join("linked")).unwrap();
+        assert!(scan_agent_skills(&agent, &roots).is_err(), "path-prefix siblings are outside");
+        std::fs::remove_file(agent.join("linked")).unwrap();
+        symlink(temp.path().join("missing"), agent.join("linked")).unwrap();
+        assert!(scan_agent_skills(&agent, &roots).is_err(), "broken links fail closed");
+        assert!(canonical_inventory_roots(&[temp.path().join("missing")]).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn inventory_allows_only_junctions_within_explicit_roots() {
+        let temp = tempfile::tempdir().unwrap();
+        let agent = temp.path().join("agent");
+        let allowed = temp.path().join("library");
+        let foreign = temp.path().join("foreign");
+        let approved = allowed.join("skill");
+        std::fs::create_dir_all(&agent).unwrap();
+        std::fs::create_dir_all(&approved).unwrap();
+        std::fs::create_dir_all(&foreign).unwrap();
+        std::fs::write(approved.join("SKILL.md"), b"allowed").unwrap();
+        std::fs::write(foreign.join("SKILL.md"), b"foreign").unwrap();
+        let link = agent.join("linked");
+        junction::create(&approved, &link).unwrap();
+        let roots = canonical_inventory_roots(&[allowed]).unwrap();
+        assert!(scan_agent_skills(&agent, &[]).is_err());
+        assert_eq!(scan_agent_skills(&agent, &roots).unwrap()[0].name, "linked");
+        junction::delete(&link).unwrap();
+        // junction::delete removes the reparse point but may leave its empty
+        // directory behind, so test a distinct path for the foreign target.
+        let outside_link = agent.join("outside");
+        junction::create(&foreign, &outside_link).unwrap();
+        assert!(scan_agent_skills(&agent, &roots).is_err());
+        junction::delete(&outside_link).unwrap();
+    }
 
     fn instruction(action: &str, skill_name: &str) -> DeviceInstruction {
         DeviceInstruction {
@@ -781,6 +999,7 @@ mod tests {
                 key: "codex".to_string(),
                 dir: agent_root.clone(),
             }],
+            inventory_allowed_roots: vec![],
             max_instructions: 10,
             dry_run: false,
         };
@@ -796,6 +1015,49 @@ mod tests {
         assert_eq!(snapshot.states[0].agents[0].key, "codex");
         assert_eq!(snapshot.states[0].agents[0].skills.len(), 1);
         assert_eq!(snapshot.states[0].agents[0].skills[0].name, "present-skill");
+    }
+
+    #[test]
+    fn inventory_run_once_publishes_allowed_link_and_preserves_prior_report_after_denial() {
+        let env = TestEnv::new();
+        let remote = env.base.join("channel-links.git");
+        std::fs::create_dir_all(&remote).unwrap();
+        devices_run_git_init(&remote);
+        let agent = env.base.join("agent-links");
+        let library = env.base.join("approved-library");
+        let skill = library.join("shared");
+        std::fs::create_dir_all(&agent).unwrap();
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(skill.join("SKILL.md"), b"fixture").unwrap();
+        let linked = agent.join("shared");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&skill, &linked).unwrap();
+        #[cfg(windows)]
+        junction::create(&skill, &linked).unwrap();
+        let url = remote.to_string_lossy().to_string();
+        let mut config = ExecutorConfig {
+            url: url.clone(), branch: "devices-test".into(), device_id: "dev-links".into(),
+            agents: vec![AgentMapping { key: "codex".into(), dir: agent }],
+            inventory_allowed_roots: vec![library], max_instructions: 10, dry_run: false,
+        };
+        let first = run_once(&config).unwrap();
+        assert!(first.published, "{:?}", first.publish_error);
+        assert!(first.warnings.is_empty(), "{:?}", first.warnings);
+        let initial = devices::fetch_channel_snapshot(&url, "devices-test").unwrap();
+        assert_eq!(initial.states.len(), 1);
+        assert_eq!(initial.states[0].agents[0].skills[0].name, "shared");
+        let initial_timestamp = initial.states[0].reported_at;
+        let initial_hash = initial.states[0].agents[0].skills[0].content_hash.clone();
+
+        config.inventory_allowed_roots.clear();
+        let second = run_once(&config).unwrap();
+        assert!(second.published, "{:?}", second.publish_error);
+        assert!(second.warnings.iter().any(|w| w.contains("State report not published")));
+        let after = devices::fetch_channel_snapshot(&url, "devices-test").unwrap();
+        assert_eq!(after.states[0].reported_at, initial_timestamp);
+        assert_eq!(after.states[0].agents[0].skills[0].content_hash, initial_hash);
+        #[cfg(windows)]
+        junction::delete(&linked).unwrap();
     }
 
     fn devices_run_git_init(path: &Path) {
@@ -914,6 +1176,7 @@ mod tests {
                 key: "codex".to_string(),
                 dir: agent_root.clone(),
             }],
+            inventory_allowed_roots: vec![],
             max_instructions: 10,
             dry_run: false,
         };
