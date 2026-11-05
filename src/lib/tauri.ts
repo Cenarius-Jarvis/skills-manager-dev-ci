@@ -969,6 +969,8 @@ export interface DevicesPage {
   channel: DeviceChannelStatus;
   devices: DeviceWithStatus[];
   instructions: DeviceInstructionRow[];
+  /** null/absent: no channel fetch; []: refresh had no reported warnings. */
+  snapshot_warnings?: string[] | null;
 }
 
 export interface DeviceRow {
