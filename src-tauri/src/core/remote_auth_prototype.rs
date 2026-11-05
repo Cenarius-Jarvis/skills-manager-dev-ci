@@ -61,7 +61,7 @@ fn verify_and_claim(conn: &mut Connection, cmd: &CommandV1, signature: &[u8],
     trusted: &TrustedKey, expected_device: &str, now: i64) -> Result<()> {
     if cmd.version != 1 || cmd.operation != "deploy_existing_skill_v1"
         || !bounded_identifier(&cmd.key_id, 64)
-        || uuid::Uuid::parse_str(&cmd.command_id).is_err()
+        || uuid::Uuid::parse_str(&cmd.command_id).map(|id| id.to_string() != cmd.command_id).unwrap_or(true)
         || !bounded_identifier(&cmd.device_id, 128)
         || !bounded_identifier(&cmd.skill_id, 128)
         || !bounded_identifier(&cmd.agent_key, 64)
