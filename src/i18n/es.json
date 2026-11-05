@@ -288,7 +288,7 @@
     "devicePlatformLabel": "Plataforma (opcional)",
     "addDevice": "Añadir dispositivo",
     "instructTitle": "Enviar solicitud de despliegue",
-    "instructHint": "La solicitud se publica en el canal; el estado solo pasa a “desplegada” cuando el propio dispositivo informa del resultado.",
+    "instructHint": "El despliegue remoto no está disponible mientras se desarrollan la vinculación de dispositivos y los comandos firmados. No se pueden publicar instrucciones sin firmar.",
     "actionLabel": "Acción",
     "skillUrlLabel": "URL del repositorio de la habilidad",
     "skillBranchLabel": "Rama (opcional)",
