@@ -347,7 +347,8 @@ fn base_entry(inst: &DeviceInstruction, commit: &str, target: &str, status: &str
 /// target path. The started journal record is written here; the caller owns
 /// the completed record (it carries the receipt), so a crash between copy and
 /// journal leaves an unverified partial target that needs manual review.
-pub fn apply_deploy(
+#[cfg(test)]
+fn apply_deploy(
     agent_root: &Path,
     inst: &DeviceInstruction,
     source_dir: &Path,
@@ -433,7 +434,8 @@ pub fn apply_deploy(
 
 /// Removes a previously deployed skill. Only paths with a journal record are
 /// eligible; anything else is a conflict and stays untouched.
-pub fn apply_undeploy(
+#[cfg(test)]
+fn apply_undeploy(
     agent_root: &Path,
     inst: &DeviceInstruction,
     commit: &str,
