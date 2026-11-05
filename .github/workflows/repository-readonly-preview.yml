@@ -34,9 +34,43 @@ jobs:
           $exe = 'src-tauri/target/release/repository-readonly-preview.exe'
           if (-not (Test-Path -LiteralPath $exe)) { throw 'Preview executable missing' }
           Get-FileHash -Algorithm SHA256 -LiteralPath $exe
+      - name: Smoke test in clean hosted user profile
+        shell: pwsh
+        run: |
+          $protected = @(
+            (Join-Path $env:USERPROFILE '.skills-manager'),
+            (Join-Path $env:USERPROFILE '.codex'),
+            (Join-Path $env:USERPROFILE '.agents'),
+            (Join-Path $env:USERPROFILE '.config/opencode'),
+            (Join-Path $env:APPDATA 'skills-manager')
+          )
+          foreach ($path in $protected) {
+            if (Test-Path -LiteralPath $path) { throw "Expected clean hosted fixture path: $path" }
+          }
+          $exe = (Resolve-Path -LiteralPath 'src-tauri/target/release/repository-readonly-preview.exe').Path
+          $process = Start-Process -FilePath $exe -WindowStyle Hidden -PassThru
+          try {
+            Start-Sleep -Seconds 10
+            $process.Refresh()
+            if ($process.HasExited) { throw "Preview exited during startup: $($process.ExitCode)" }
+          } finally {
+            if (-not $process.HasExited) {
+              $null = $process.CloseMainWindow()
+              if (-not $process.WaitForExit(10000)) { Stop-Process -Id $process.Id }
+            }
+          }
+          foreach ($path in $protected) {
+            if (Test-Path -LiteralPath $path) { throw "Preview created a protected fixture path: $path" }
+          }
+      - name: Prepare preview and instructions
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path preview-output | Out-Null
+          Copy-Item -LiteralPath 'src-tauri/target/release/repository-readonly-preview.exe' -Destination preview-output
+          Copy-Item -LiteralPath 'repository-preview/README.zh-CN.md' -Destination preview-output
       - uses: actions/upload-artifact@v4
         with:
           name: skills-repository-readonly-preview-windows
-          path: src-tauri/target/release/repository-readonly-preview.exe
+          path: preview-output/
           if-no-files-found: error
           retention-days: 14
