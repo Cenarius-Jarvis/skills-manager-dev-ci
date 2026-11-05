@@ -60,3 +60,21 @@ fn main() {
         .run(tauri::generate_context!("tauri.repository-preview.conf.json"))
         .expect("repository preview failed");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preview_store_lives_as_long_as_background_refresh() {
+        let temp = tempfile::tempdir().unwrap();
+        let temp_path = temp.path().to_path_buf();
+        let store = SkillStore::new(&temp_path.join("preview.db")).unwrap();
+        let application = Arc::new(PreviewResources { store, _temporary_directory: temp });
+        let refresh = Arc::clone(&application);
+        drop(application);
+        assert!(temp_path.exists(), "background task must retain the database");
+        drop(refresh);
+        assert!(!temp_path.exists(), "temporary database should be removed after the final owner exits");
+    }
+}
