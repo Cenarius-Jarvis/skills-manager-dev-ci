@@ -6,7 +6,7 @@ use anyhow::{Context, anyhow, bail};
 use app_lib::commands::{presets as preset_cmd, skills as cmd, tools as tool_cmd};
 use app_lib::core::{
     app_state, audit_log::AuditDraft, central_repo, device_executor, device_inventory, devices, error::AppError,
-    git_backup, git_fetcher, installer, library_layers, merge, repo_lock::RepoLock,
+    git_backup, git_fetcher, installer, library_layers, merge, repo_lock::RepoLock, repository_sources,
     scenario_service, skill_metadata, skill_store::SkillStore, skillssh_api, sync_engine,
     sync_metadata, tool_adapters, tool_service, well_known,
 };
@@ -772,6 +772,22 @@ struct DevicesArgs {
 
 #[derive(Subcommand, Debug)]
 enum DevicesCommand {
+    /// List independently configured repository sources.
+    SourceList,
+    /// Add a repository source; does not fetch, publish, install, or deploy.
+    SourceAdd {
+        #[arg(long)] name: String,
+        #[arg(long)] device_id: Option<String>,
+        #[arg(long)] url: String,
+        #[arg(long, default_value = "main")] branch: String,
+        #[arg(long, default_value = "")] root: String,
+    },
+    /// Read the latest successfully fetched snapshot from local metadata.
+    SourceSnapshot { id: String },
+    /// Read the committed tree from a repository; no working tree or push.
+    SourceRefresh { id: String },
+    /// Remove source configuration and its snapshot, not the remote repository.
+    SourceRemove { id: String },
     /// Inspect one local agent directory without executing or publishing anything.
     Inventory {
         /// Agent skill directory to inspect.
@@ -818,6 +834,27 @@ struct DevicesWhoami {
 
 fn run_devices(args: DevicesArgs, store: &SkillStore, json: bool) -> anyhow::Result<()> {
     match args.command {
+        DevicesCommand::SourceList => {
+            print_json(&store.list_repository_sources()?, json);
+            Ok(())
+        }
+        DevicesCommand::SourceAdd { name, device_id, url, branch, root } => {
+            let source = repository_sources::add_source(store, &name, device_id, &url, &branch, &root)?;
+            print_json(&source, json);
+            Ok(())
+        }
+        DevicesCommand::SourceSnapshot { id } => {
+            print_json(&store.get_repository_snapshot(&id)?, json);
+            Ok(())
+        }
+        DevicesCommand::SourceRefresh { id } => {
+            print_json(&repository_sources::refresh_source(store, &id)?, json);
+            Ok(())
+        }
+        DevicesCommand::SourceRemove { id } => {
+            print_json(&store.delete_repository_source(&id)?, json);
+            Ok(())
+        }
         DevicesCommand::Inventory { .. } => unreachable!("handled before the store is opened"),
         DevicesCommand::Whoami => {
             let report = DevicesWhoami {
