@@ -3546,6 +3546,21 @@ mod tests {
     }
 
     #[test]
+    fn device_library_report_missing_database_does_not_initialize_store() {
+        let temp = tempdir().unwrap();
+        let base = temp.path().join("not-created");
+        central_repo::set_runtime_base_dir_override(Some(base.clone()));
+        let cli = Cli::try_parse_from([
+            "skills-manager-cli", "devices", "report-library",
+            "--url", "fixture.git", "--device-id", "dev-test",
+        ]).unwrap();
+        let result = run(cli);
+        central_repo::set_runtime_base_dir_override(None);
+        assert!(result.is_err());
+        assert!(!base.exists(), "report command must not create the manager store");
+    }
+
+    #[test]
     fn executor_dry_run_requires_explicit_identity_before_store_initialization() {
         let cli = Cli::try_parse_from([
             "skills-manager-cli", "devices", "run-once",
