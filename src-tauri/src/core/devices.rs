@@ -591,10 +591,12 @@ fn run_git(dir: Option<&Path>, creds_for_url: Option<&str>, args: &[&str]) -> Re
         .output()
         .with_context(|| format!("failed to run git {}", args.first().unwrap_or(&"")))?;
     if !output.status.success() {
+        // Git can echo userinfo, query tokens and credential-helper output.
+        // Do not surface arguments or stderr to UI/logs on failure.
         bail!(
-            "git {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim()
+            "git {} failed ({}); check repository access, branch and network",
+            args.first().unwrap_or(&"operation"),
+            output.status
         );
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -620,13 +622,62 @@ fn prepare_working_copy(url: &str, branch: &str) -> Result<(tempfile::TempDir, P
     )
     .is_ok();
     if !clone_ok {
-        // Likely an empty remote (or the branch does not exist yet): start the
-        // branch from scratch. If the remote actually had history, the push
-        // below is rejected as non-fast-forward and surfaces as an error.
+        // Distinguish a reachable remote without this branch from a failed
+        // clone caused by connectivity, authentication or server errors.
+        // Without this check an outage is misreported as an empty channel.
+        let refs = run_git(None, Some(url), &["ls-remote", "--heads", url])
+            .context("could not verify the remote channel")?;
+        let expected = format!("refs/heads/{branch}");
+        if refs.lines().any(|line| line.split_whitespace().nth(1) == Some(expected.as_str())) {
+            bail!("channel branch exists but could not be cloned");
+        }
         run_git(None, None, &["init", "-b", branch, &dir.to_string_lossy()])?;
         run_git(Some(&dir), None, &["remote", "add", "origin", url])?;
     }
+    validate_channel_worktree(&dir)?;
     Ok((tmp, dir))
+}
+
+/// Reject links or Windows reparse points before reading or writing channel
+/// JSON. The checkout is untrusted; following one could escape the temp root.
+fn validate_channel_worktree(root: &Path) -> Result<()> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut visited = 0usize;
+    while let Some(dir) = pending.pop() {
+        let meta = std::fs::symlink_metadata(&dir)?;
+        if channel_path_is_link(&meta) || !meta.is_dir() {
+            bail!("channel checkout contains a link or invalid directory");
+        }
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            visited += 1;
+            if visited > 100_000 { bail!("channel checkout exceeds entry limit"); }
+            let meta = std::fs::symlink_metadata(entry.path())?;
+            if channel_path_is_link(&meta) {
+                bail!("channel checkout contains a link or reparse point");
+            }
+            if meta.is_dir() {
+                // Git owns this administrative directory; it is not channel data.
+                if dir == root && entry.file_name() == ".git" { continue; }
+                pending.push(entry.path());
+            } else if !meta.is_file() {
+                bail!("channel checkout contains a special file");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn channel_path_is_link(meta: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        meta.file_type().is_symlink() || meta.file_attributes() & 0x400 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        meta.file_type().is_symlink()
+    }
 }
 
 fn commit_and_push(dir: &Path, url: &str, branch: &str, author: &str, message: &str) -> Result<String> {
@@ -1372,6 +1423,47 @@ mod tests {
     /// End-to-end over a local bare remote: publish instructions, read them
     /// back, publish receipts, and confirm the derived states — the same file
     /// flow the real channel uses, minus the network.
+    #[test]
+    fn channel_unreachable_is_error_and_empty_remote_is_distinct() {
+        let temp = tempfile::tempdir().unwrap();
+        let missing = temp.path().join("missing-channel.git");
+        assert!(fetch_channel_snapshot(&missing.to_string_lossy(), "devices-test").is_err());
+
+        let remote = temp.path().join("empty-channel.git");
+        run_git(None, None, &["init", "--bare", &remote.to_string_lossy()]).unwrap();
+        let snapshot = fetch_channel_snapshot(&remote.to_string_lossy(), "devices-test").unwrap();
+        assert!(snapshot.head_commit.is_empty());
+        assert!(snapshot.states.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn channel_rejects_symlinks_before_accessing_external_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let checkout = temp.path().join("checkout");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&checkout).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("keep"), b"unchanged").unwrap();
+        std::os::unix::fs::symlink(&outside, checkout.join("devices")).unwrap();
+        assert!(validate_channel_worktree(&checkout).is_err());
+        assert_eq!(std::fs::read(outside.join("keep")).unwrap(), b"unchanged");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn channel_rejects_windows_junctions_before_accessing_external_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let checkout = temp.path().join("checkout");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&checkout).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("keep"), b"unchanged").unwrap();
+        junction::create(&outside, checkout.join("devices")).unwrap();
+        assert!(validate_channel_worktree(&checkout).is_err());
+        assert_eq!(std::fs::read(outside.join("keep")).unwrap(), b"unchanged");
+    }
+
     #[test]
     fn channel_roundtrip_instructions_and_receipts() {
         let tmp = tempfile::tempdir().unwrap();
