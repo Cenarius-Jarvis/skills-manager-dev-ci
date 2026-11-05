@@ -1015,3 +1015,28 @@ export interface LocalInventory {
 }
 export const devicesInspectLocal = (agentDir: string, allowedRoots: string[]) =>
   invoke<LocalInventory>("devices_inspect_local", { agentDir, allowedRoots });
+
+
+// Independent repository inventories; these APIs never publish or deploy.
+export interface RepositorySource {
+  id: string;
+  name: string;
+  device_id: string | null;
+  url: string;
+  branch: string;
+  skills_root: string;
+  created_at: number;
+}
+export interface RepositorySnapshot {
+  source_id: string;
+  head_commit: string;
+  fetched_at: number;
+  observed_at: number;
+  skills: { name: string; relative_path: string }[];
+}
+export const repositorySourcesList = () => invoke<RepositorySource[]>("repository_sources_list");
+export const repositorySourcesAdd = (name: string, deviceId: string | null, url: string, branch: string, skillsRoot: string) =>
+  invoke<RepositorySource>("repository_sources_add", { name, deviceId, url, branch, skillsRoot });
+export const repositorySourcesRemove = (id: string) => invoke<boolean>("repository_sources_remove", { id });
+export const repositorySourcesSnapshot = (id: string) => invoke<RepositorySnapshot | null>("repository_sources_snapshot", { id });
+export const repositorySourcesRefresh = (id: string) => invoke<RepositorySnapshot>("repository_sources_refresh", { id });
