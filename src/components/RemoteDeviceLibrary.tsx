@@ -11,7 +11,7 @@ function formatTimestamp(ts: number | null, locale: string): string {
 }
 
 /** The remote-device form of the library page: what the device last
- * reported about its own agents, plus its deployment requests and
+ * reported about its central library and agents, plus deployment requests and
  * outcomes. Strictly read-only — "deployed" appears only when the device
  * itself reported it (docs/devices.md). */
 export function RemoteDeviceLibrary({
@@ -76,6 +76,29 @@ export function RemoteDeviceLibrary({
           </span>
         </div>
 
+        <section className="mt-4 rounded-lg border border-border-subtle p-3" data-testid="remote-central-library">
+          <h2 className="app-section-title">{t("devices.libraryTitle")}</h2>
+          <p className="text-[12px] text-muted">{t("devices.libraryMetadataNotice")}</p>
+          <p className="mt-2 text-[12px] text-muted" role="status" data-testid="remote-library-state">
+            {t(`devices.libraryState.${device.library?.state ?? "missing"}`)}
+            {device.library?.reported_at
+              ? ` · ${t("devices.libraryLastReport", { time: formatTimestamp(device.library.reported_at, locale) })}`
+              : ""}
+          </p>
+          {device.library?.reported_at && device.library.skills.length === 0 && (
+            <p className="mt-2 text-[13px] text-muted">{t("devices.libraryEmpty")}</p>
+          )}
+          {!!device.library?.skills.length && (
+            <ul className="mt-2 flex flex-col gap-1 text-[13px]" data-testid="remote-library-skills">
+              {device.library.skills.map((skill) => (
+                <li key={skill.id}>
+                  {skill.name}{!skill.enabled && <span className="ml-2 text-muted">{t("devices.libraryDisabled")}</span>}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+        <h2 className="app-section-title mt-4">{t("devices.agentDeployments")}</h2>
         {device.skill_records.length === 0 ? (
           <p className="mt-3 text-[13px] text-muted" data-testid="remote-no-skills">
             {t("devices.noSkillRecords")}
