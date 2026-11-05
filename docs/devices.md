@@ -205,3 +205,33 @@ repeat `--allowed-root` for multiple approved roots. Skipped, broken or
 unreadable entries make `complete` false and produce warnings. An empty
 skill list is not proof of an empty device when `complete` is false. No
 inventory data leaves the device as a result of this command.
+
+
+## Experimental registered-library sidecar
+
+A device's central Skills Manager library and its Agent deployment inventory
+are different things. The optional `library-v1.json` sidecar reports only the
+device ID, report time, completeness, and each registered skill's ID, name and
+enabled flag. It does not contain skill contents, descriptions, paths, source
+URLs, credentials or deployment claims. Skill names can still be sensitive:
+review them and the destination before publishing, and use a private channel.
+
+On an isolated test channel, an explicit reporting command is:
+
+```text
+skills-manager-cli devices report-library --url <private-channel> --branch <channel-branch> --device-id <device-id>
+```
+
+This command reads the device's Skills Manager registration database and
+publishes the sidecar. It does not run the device executor, process any
+instructions or change Agent directories. It reports registered metadata, not
+proof that a skill's files still exist. It does not configure a schedule or
+automatically report from another machine.
+
+The sidecar has a separate version from `state.json`. Older clients ignore it
+and keep reading the unchanged per-Agent state. The receiving client keeps the
+last complete library snapshot when the sidecar is missing, invalid,
+incomplete or older, and labels the freshness accordingly. A valid empty report
+is distinct from an absent report. Each report is capped at 1 MiB and 5,000
+skills; report validation also checks device identity, field lengths, duplicate
+IDs and unknown fields.
