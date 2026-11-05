@@ -311,6 +311,41 @@ mod tests {
     }
 
     #[test]
+    fn remote_auth_prototype_begin_and_revocation_have_defined_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = temp.path().join("commands.db");
+        let mut conn = open_fixture(&db);
+        let (cmd, trust, signer) = fixture();
+        initialize_pairing(&conn, &cmd, &trust);
+        let signature = signer.sign(&canonical(&cmd).unwrap()).as_ref().to_vec();
+        paired_claim(&mut conn, &cmd, &signature, "dev-fixture", 200).unwrap();
+        drop(conn);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let db_a = db.clone();
+        let cmd_a = cmd.clone();
+        let gate_a = barrier.clone();
+        let begin = std::thread::spawn(move || {
+            let mut conn = open_fixture(&db_a);
+            gate_a.wait();
+            paired_begin(&mut conn, &cmd_a, &signature, "dev-fixture", 200).is_ok()
+        });
+        let db_b = db.clone();
+        let cmd_b = cmd.clone();
+        let gate_b = barrier.clone();
+        let revoke = std::thread::spawn(move || {
+            let mut conn = open_fixture(&db_b);
+            gate_b.wait();
+            revoke_fixture_key(&mut conn, &cmd_b.device_id, &cmd_b.key_id).unwrap();
+        });
+        let began = begin.join().unwrap();
+        revoke.join().unwrap();
+        let conn = open_fixture(&db);
+        let state: String = conn.query_row("SELECT state FROM fixture_command_claims WHERE command_id = ?1",
+            params![cmd.command_id], |row| row.get(0)).unwrap();
+        assert_eq!(state, if began { "consuming" } else { "revoked_after_claim" });
+    }
+
+    #[test]
     fn remote_auth_prototype_pairing_revoke_and_claim_serialize() {
         let temp = tempfile::tempdir().unwrap();
         let db = temp.path().join("commands.db");
