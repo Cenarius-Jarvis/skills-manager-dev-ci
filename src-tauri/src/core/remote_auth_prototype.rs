@@ -79,8 +79,9 @@ fn verify_and_claim(conn: &mut Connection, cmd: &CommandV1, signature: &[u8],
     let payload_hash = hex::encode(Sha256::digest(&payload));
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let inserted = tx.execute(
-        "INSERT OR IGNORE INTO fixture_command_claims (command_id, device_id, payload_hash, state)
-         VALUES (?1, ?2, ?3, 'claimed')",
+        "INSERT INTO fixture_command_claims (command_id, device_id, payload_hash, state)
+         VALUES (?1, ?2, ?3, 'claimed')
+         ON CONFLICT(command_id) DO NOTHING",
         params![cmd.command_id, cmd.device_id, payload_hash],
     )?;
     if inserted != 1 { bail!("command already claimed"); }
