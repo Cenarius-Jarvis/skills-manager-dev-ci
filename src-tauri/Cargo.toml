@@ -58,3 +58,6 @@ clap = { version = "4.5", features = ["derive"] }
 
 [target.'cfg(windows)'.dependencies]
 junction = "2"
+
+[dev-dependencies]
+ring = "0.17.14"
