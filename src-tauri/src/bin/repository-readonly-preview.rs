@@ -66,6 +66,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn compiled_preview_context_uses_visible_isolated_configuration() {
+        let context = tauri::generate_context!("tauri.repository-preview.conf.json");
+        let config = context.config();
+        assert_eq!(config.identifier, "dev.skillsmanager.repositoryreadonlypreview");
+        assert_eq!(config.app.windows.len(), 1);
+        assert!(config.app.windows[0].visible, "preview window must be visible");
+        assert_eq!(config.app.windows[0].title, "Skills Manager · 双仓库只读预览");
+    }
+
+    #[test]
     fn preview_store_lives_as_long_as_background_refresh() {
         let temp = tempfile::tempdir().unwrap();
         let temp_path = temp.path().to_path_buf();
