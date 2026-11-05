@@ -728,12 +728,28 @@ pub fn publish_instructions(
     manifest: Option<&DeviceManifest>,
     instructions: &[DeviceInstruction],
 ) -> Result<String> {
-    // Only fixture tests may publish the legacy unsigned protocol. Production
-    // may still publish a device manifest when there are no instructions.
-    #[cfg(not(test))]
     if !instructions.is_empty() {
         bail!("unsigned remote instruction publication is disabled");
     }
+    publish_instructions_impl(url, branch, manifest, instructions)
+}
+
+#[cfg(test)]
+pub(crate) fn publish_instructions_unsigned_fixture(
+    url: &str,
+    branch: &str,
+    manifest: Option<&DeviceManifest>,
+    instructions: &[DeviceInstruction],
+) -> Result<String> {
+    publish_instructions_impl(url, branch, manifest, instructions)
+}
+
+fn publish_instructions_impl(
+    url: &str,
+    branch: &str,
+    manifest: Option<&DeviceManifest>,
+    instructions: &[DeviceInstruction],
+) -> Result<String> {
     for inst in instructions {
         validate_instruction(inst)?;
     }
@@ -1730,7 +1746,7 @@ mod tests {
         let remote_url = remote_path.to_string_lossy().to_string();
 
         let inst = instruction("inst-roundtrip");
-        let head = publish_instructions(&remote_url, "devices-test", None, &[inst.clone()]).unwrap();
+        let head = publish_instructions_unsigned_fixture(&remote_url, "devices-test", None, &[inst.clone()]).unwrap();
         assert_eq!(head.len(), 40, "publish returns the pushed head commit");
 
         let snapshot = fetch_channel_snapshot(&remote_url, "devices-test").unwrap();
@@ -1778,7 +1794,7 @@ mod tests {
         let remote_url = remote_path.to_string_lossy().to_string();
         let mut inst = instruction("inst-bad");
         inst.skill_subpath = Some("../escape".to_string());
-        assert!(publish_instructions(&remote_url, "devices-test", None, &[inst]).is_err());
+        assert!(publish_instructions_unsigned_fixture(&remote_url, "devices-test", None, &[inst]).is_err());
     }
 
     #[test]
