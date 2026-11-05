@@ -235,6 +235,12 @@ mod tests {
         cmd.root_fingerprint = hex::encode(Sha256::digest(approved.to_string_lossy().as_bytes()));
         let signature = signer.sign(&canonical(&cmd).unwrap());
 
+        // The native fixture must refuse bytes that changed after signing.
+        std::fs::write(source.join("SKILL.md"), "# modified fixture").unwrap();
+        assert!(native_managed_executor::deploy_new_slot(&store, &cmd.skill_id, &cmd.agent_key, &approved).is_err());
+        assert!(!agent.join("sample").exists());
+        std::fs::write(source.join("SKILL.md"), "# fake fixture").unwrap();
+
         let mut conn = open_fixture(&temp.path().join("claims.db"));
         // Real integration must obtain this mapping from an approved local store.
         assert_eq!(cmd.root_fingerprint, hex::encode(Sha256::digest(approved.to_string_lossy().as_bytes())));
