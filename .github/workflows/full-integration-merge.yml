@@ -1,0 +1,40 @@
+name: Integrate tested library views
+on:
+  push:
+    branches: [codex/full-integration-prep]
+    paths: ['.github/workflows/full-integration-merge.yml']
+permissions:
+  contents: write
+jobs:
+  integrate:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+      - name: Merge tested snapshots into isolated candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          output_ref=refs/heads/codex/full-integration-candidate
+          if git ls-remote --exit-code --heads origin "$output_ref" >/dev/null 2>&1; then
+            echo "Output branch already exists; refusing to alter it"
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for commit in 7c6a5d5418a925828e0e16ed5079aa1130cdc9f7 7d94e47d25b920088d40699e71edf0c1bf8bd819; do
+            git fetch --no-tags origin "$commit"
+            test "$(git rev-parse FETCH_HEAD)" = "$commit"
+            if ! git merge --no-ff --no-edit "$commit"; then
+              git status --short
+              git diff --name-only --diff-filter=U
+              echo "Integration conflict; no candidate branch published."
+              exit 1
+            fi
+            git merge-base --is-ancestor "$commit" HEAD
+          done
+          git diff --check HEAD^ HEAD
+          git push origin "HEAD:$output_ref"
+          echo "Candidate created; run integrated checks before use."
