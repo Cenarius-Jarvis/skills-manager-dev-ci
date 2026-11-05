@@ -228,8 +228,27 @@ pub fn remove_device_internal(store: &SkillStore, device_id: &str) -> Result<(),
     Ok(())
 }
 
+/// Unsigned instructions may be consumed by older devices. Do not publish them
+/// until an authenticated command protocol is available.
 #[allow(clippy::too_many_arguments)]
 pub fn create_instruction_internal(
+    _store: &SkillStore,
+    _device_id: &str,
+    _action: &str,
+    _skill_url: Option<&str>,
+    _skill_branch: Option<&str>,
+    _skill_subpath: Option<&str>,
+    _skill_name: Option<&str>,
+    _agent_key: &str,
+    _ttl_secs: Option<i64>,
+) -> Result<DeviceInstructionRow, AppError> {
+    Err(AppError::invalid_input("remote instruction publication is disabled until authenticated commands are available"))
+}
+
+/// Retained only for fake-fixture coverage; never compiled into product code.
+#[cfg(test)]
+#[allow(dead_code, clippy::too_many_arguments)]
+fn create_unsigned_instruction_fixture(
     store: &SkillStore,
     device_id: &str,
     action: &str,
@@ -422,6 +441,18 @@ pub async fn devices_inspect_local(
 mod snapshot_warning_tests {
     use super::*;
     use crate::core::devices::{ChannelSnapshot, DeviceInstruction, DeviceReceipt};
+
+    #[test]
+    fn device_unsigned_instruction_publication_is_blocked() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SkillStore::new(&dir.path().join("test.db")).unwrap();
+        let err = create_instruction_internal(
+            &store, "dev-fixture", "deploy", Some("https://example.invalid/fixture.git"),
+            None, None, Some("fixture"), "codex", None
+        ).unwrap_err();
+        assert!(err.message.contains("publication is disabled"));
+        assert!(store.get_device("dev-fixture").unwrap().is_none());
+    }
 
     #[test]
     fn device_page_preserves_fetch_and_import_warnings_and_unknown_cache_state() {
