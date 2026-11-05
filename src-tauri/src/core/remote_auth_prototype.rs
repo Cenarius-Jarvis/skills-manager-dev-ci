@@ -171,8 +171,9 @@ mod tests {
     /// Revocation conservatively invalidates every pending claim on that fixture device.
     fn revoke_fixture_key(conn: &mut Connection, device_id: &str, key_id: &str) -> Result<()> {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        tx.execute("UPDATE fixture_trusted_keys SET state = 'revoked' WHERE device_id = ?1 AND key_id = ?2",
+        let changed = tx.execute("UPDATE fixture_trusted_keys SET state = 'revoked' WHERE device_id = ?1 AND key_id = ?2",
             params![device_id, key_id])?;
+        if changed != 1 { bail!("unknown trusted key"); }
         tx.execute("UPDATE fixture_command_claims SET state = 'revoked_after_claim' WHERE device_id = ?1 AND state = 'claimed'",
             params![device_id])?;
         tx.commit()?;
