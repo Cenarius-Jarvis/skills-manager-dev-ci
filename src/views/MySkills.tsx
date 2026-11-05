@@ -220,7 +220,7 @@ export function MySkills() {
   const [layerMoveSkill, setLayerMoveSkill] = useState<ManagedSkill | null>(null);
   const [layerManageOpen, setLayerManageOpen] = useState(false);
   const [layerSuggestDismissed, setLayerSuggestDismissed] = useState(false);
-  const { view: deviceView, devicesPage, refreshDevices, devicesLoading } = useDeviceView();
+  const { view: deviceView, devicesPage, refreshDevices, devicesLoading, devicesError } = useDeviceView();
   const remoteDevice =
     deviceView !== "local"
       ? devicesPage?.devices.find((d) => d.id === deviceView) ?? null
@@ -1259,6 +1259,7 @@ export function MySkills() {
         device={remoteDevice}
         instructions={devicesPage?.instructions ?? []}
         loading={devicesLoading}
+        error={devicesError}
         onRefresh={() => void refreshDevices()}
       />
     );
