@@ -288,7 +288,7 @@
     "devicePlatformLabel": "Platform (optional)",
     "addDevice": "Add device",
     "instructTitle": "Send a deployment request",
-    "instructHint": "The request is published to the channel; the state below turns “deployed” only after the device itself reports the outcome.",
+    "instructHint": "Remote deployment is unavailable while device pairing and signed commands are being developed. Unsigned instructions cannot be published.",
     "actionLabel": "Action",
     "skillUrlLabel": "Skill repository URL",
     "skillBranchLabel": "Branch (optional)",
