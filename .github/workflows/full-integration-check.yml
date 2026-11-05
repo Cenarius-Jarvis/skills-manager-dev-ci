@@ -1,0 +1,50 @@
+name: Full integration checks
+on:
+  push:
+    branches: [codex/full-integration-candidate]
+    paths: ['.github/workflows/full-integration-check.yml']
+permissions:
+  contents: read
+jobs:
+  frontend:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Test combined device and repository views
+        run: npx vitest run src/views/Devices.test.tsx src/context/DeviceViewContext.test.tsx src/components/RemoteDeviceLibrary.test.tsx src/components/RemoteDeviceLibraryInventory.test.tsx src/components/RepositorySources.test.tsx src/components/LocalInventoryPreview.test.tsx
+      - run: npm run build
+      - run: node scripts/check-i18n.mjs
+  backend:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: src-tauri
+      - name: Install Linux runner dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: Test central library snapshots and privacy
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib device_library_report -- --test-threads=1
+      - name: Test independent fake repository sources
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib repository_sources -- --test-threads=1
+      - name: Test executor and approved inventory links
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib device_executor -- --test-threads=1
+      - name: Test CLI no-write preview
+        run: cargo test --manifest-path src-tauri/Cargo.toml --bin skills-manager-cli executor_dry_run -- --test-threads=1
+      - name: Test CLI linked inventory roots
+        run: cargo test --manifest-path src-tauri/Cargo.toml --bin skills-manager-cli inventory_run_once_cli -- --test-threads=1
+      - name: Test migrations
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib migrations -- --test-threads=1
