@@ -1450,6 +1450,38 @@ mod tests {
         assert_eq!(std::fs::read(outside.join("keep")).unwrap(), b"unchanged");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn channel_refuses_to_publish_through_a_committed_symlink() {
+        let temp = tempfile::tempdir().unwrap();
+        let remote = temp.path().join("remote.git");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("state.json"), b"keep-this").unwrap();
+
+        // Seed a bare fake channel with a directory symlink as a Git object;
+        // checkout of this tree would otherwise direct state writes outside it.
+        let repo = git2::Repository::init_bare(&remote).unwrap();
+        let link_blob = repo.blob(outside.to_str().unwrap().as_bytes()).unwrap();
+        let mut devices_tree = repo.treebuilder(None).unwrap();
+        devices_tree.insert("dev-test", link_blob, 0o120000).unwrap();
+        let devices_oid = devices_tree.write().unwrap();
+        let mut root_tree = repo.treebuilder(None).unwrap();
+        root_tree.insert("devices", devices_oid, 0o040000).unwrap();
+        let root_oid = root_tree.write().unwrap();
+        let tree = repo.find_tree(root_oid).unwrap();
+        let signature = git2::Signature::now("Fixture", "fixture@example.invalid").unwrap();
+        let before = repo.commit(Some("refs/heads/devices-test"), &signature, &signature,
+            "fixture", &tree, &[]).unwrap();
+        let state = DeviceStateReport {
+            schema: DEVICE_PROTOCOL_VERSION, device_id: "dev-test".into(),
+            reported_at: chrono::Utc::now().timestamp(), executing: vec![], agents: vec![],
+        };
+        assert!(publish_state_report(&remote.to_string_lossy(), "devices-test", &state).is_err());
+        assert_eq!(std::fs::read(outside.join("state.json")).unwrap(), b"keep-this");
+        assert_eq!(repo.find_reference("refs/heads/devices-test").unwrap().target(), Some(before));
+    }
+
     #[cfg(windows)]
     #[test]
     fn channel_rejects_windows_junctions_before_accessing_external_paths() {
