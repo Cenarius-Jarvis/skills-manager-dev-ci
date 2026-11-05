@@ -550,7 +550,9 @@ mod tests {
 
         // The native fixture must refuse bytes that changed after signing.
         std::fs::write(source.join("SKILL.md"), "# modified fixture").unwrap();
-        assert!(native_managed_executor::deploy_new_slot(&store, &cmd.skill_id, &cmd.agent_key, &approved).is_err());
+        let error = native_managed_executor::deploy_new_slot(&store, &cmd.skill_id, &cmd.agent_key, &approved).unwrap_err();
+        assert!(error.to_string().contains("managed library content changed"),
+            "modified content must be rejected for the expected reason");
         assert!(!agent.join("sample").exists());
         std::fs::write(source.join("SKILL.md"), "# fake fixture").unwrap();
 
