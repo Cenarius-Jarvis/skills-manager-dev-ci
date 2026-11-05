@@ -41,3 +41,6 @@ pub mod timing;
 pub mod tool_adapters;
 pub mod tool_service;
 pub mod well_known;
+
+#[cfg(test)]
+mod remote_auth_prototype;
