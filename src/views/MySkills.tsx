@@ -1260,6 +1260,7 @@ export function MySkills() {
         instructions={devicesPage?.instructions ?? []}
         loading={devicesLoading}
         error={devicesError}
+        snapshotWarnings={devicesPage?.snapshot_warnings}
         onRefresh={() => void refreshDevices()}
       />
     );
