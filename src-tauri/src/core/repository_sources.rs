@@ -248,6 +248,46 @@ mod tests {
     }
 
     #[test]
+    fn repository_sources_read_only_committed_root_and_nested_skills() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let work = tmp.path().join("work");
+        let repo = git2::Repository::init(&work)?;
+        for folder in ["direct", "layer/nested"] {
+            std::fs::create_dir_all(work.join(folder))?;
+            std::fs::write(work.join(folder).join("SKILL.md"), b"committed")?;
+        }
+        let mut index = repo.index()?;
+        for path in ["direct/SKILL.md", "layer/nested/SKILL.md"] {
+            index.add_path(Path::new(path))?;
+        }
+        let tree_id = index.write_tree()?;
+        let tree = repo.find_tree(tree_id)?;
+        let sig = git2::Signature::now("fixture", "fixture@example.invalid")?;
+        let oid = repo.commit(Some("refs/heads/main"), &sig, &sig, "fixture", &tree, &[])?;
+        repo.set_head("refs/heads/main")?;
+        // Neither the newly untracked skill nor this dirty edit is a commit.
+        std::fs::create_dir_all(work.join("untracked"))?;
+        std::fs::write(work.join("untracked/SKILL.md"), b"not committed")?;
+        std::fs::write(work.join("direct/SKILL.md"), b"modified")?;
+        let mut source = RepositorySource {
+            id: "repo-fixture".into(), name: "fixture".into(), device_id: None,
+            url: "https://github.com/example/fixture.git".into(),
+            branch: "main".into(), skills_root: "".into(), created_at: 1,
+        };
+        let snapshot = read_snapshot(work.to_str().unwrap(), &source, 1)?;
+        assert_eq!(snapshot.head_commit, oid.to_string());
+        assert_eq!(snapshot.skills.iter().map(|s| s.relative_path.as_str()).collect::<Vec<_>>(),
+            ["direct", "layer/nested"]);
+        source.skills_root = "layer".into();
+        let subroot = read_snapshot(work.to_str().unwrap(), &source, 2)?;
+        assert_eq!(subroot.skills.iter().map(|s| s.relative_path.as_str()).collect::<Vec<_>>(),
+            ["layer/nested"]);
+        source.skills_root = "missing".into();
+        assert!(read_snapshot(work.to_str().unwrap(), &source, 3).is_err());
+        Ok(())
+    }
+
+    #[test]
     fn repository_sources_two_repos_are_isolated_and_failure_preserves_cache() -> Result<()> {
         let tmp = tempfile::tempdir()?;
         let repo_a = tmp.path().join("one.git");
