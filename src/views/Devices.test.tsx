@@ -104,6 +104,48 @@ describe("Devices page", () => {
     expect(badge?.getAttribute("data-state")).toBe("success");
   });
 
+  it("shows snapshot warnings without discarding previously reported device records", async () => {
+    tauri.devicesGetPage.mockResolvedValue(pageFixture);
+    tauri.devicesRefreshChannel.mockResolvedValue({
+      ...pageFixture,
+      snapshot_warnings: ["state report for fixture is malformed"],
+    });
+    await act(async () => root.render(<Devices />));
+    expect(container.querySelector('[data-testid="device-snapshot-notice"]')?.textContent)
+      .toContain("devices.channelNotChecked");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="devices-refresh"]')!.click();
+    });
+    const notice = container.querySelector('[data-testid="device-snapshot-notice"]');
+    expect(notice?.getAttribute("role")).toBe("alert");
+    expect(notice?.textContent).toContain("devices.channelIncomplete");
+    expect(notice?.textContent).toContain("state report for fixture is malformed");
+    expect(container.querySelector('[data-testid="device-dev-1"]')?.textContent)
+      .toContain("demo-skill");
+  });
+
+  it("distinguishes a clean successful refresh from a failed later refresh", async () => {
+    tauri.devicesGetPage.mockResolvedValue(pageFixture);
+    tauri.devicesRefreshChannel.mockResolvedValueOnce({ ...pageFixture, snapshot_warnings: [] })
+      .mockRejectedValueOnce({ message: "channel unavailable" });
+    await act(async () => root.render(<Devices />));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="devices-refresh"]')!.click();
+    });
+    expect(container.querySelector('[data-testid="device-snapshot-notice"]')?.textContent)
+      .toContain("devices.channelNoWarnings");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="devices-refresh"]')!.click();
+    });
+    expect(container.querySelector('[data-testid="devices-error"]')?.textContent)
+      .toContain("channel unavailable");
+    expect(container.querySelector('[data-testid="devices-error"]')?.textContent)
+      .toContain("devices.refreshFailed");
+    expect(container.querySelector('[data-testid="device-dev-1"]')).not.toBeNull();
+  });
+
   it("shows the channel setup form while the channel is unconfigured", async () => {
     tauri.devicesGetPage.mockResolvedValue({
       ...pageFixture,
