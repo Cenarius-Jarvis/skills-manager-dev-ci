@@ -880,9 +880,19 @@ pub fn publish_library_report(url: &str, branch: &str, report: &LibraryReport) -
 
 fn observe_library(path: &Path, expected_device: &str) -> LibraryObservation {
     use std::io::Read;
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return LibraryObservation::Missing,
+        Err(_) => return LibraryObservation::Invalid,
+    };
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if meta.file_attributes() & 0x400 != 0 { return LibraryObservation::Invalid; }
+    }
+    if !meta.file_type().is_file() || meta.file_type().is_symlink() { return LibraryObservation::Invalid; }
     let file = match std::fs::File::open(path) {
         Ok(f) => f,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return LibraryObservation::Missing,
         Err(_) => return LibraryObservation::Invalid,
     };
     let mut bytes = Vec::new();
@@ -1013,7 +1023,8 @@ pub fn fetch_channel_snapshot(url: &str, branch: &str) -> Result<ChannelSnapshot
     let devices_root = dir.join("devices");
     let device_entries = match std::fs::read_dir(&devices_root) {
         Ok(entries) => entries,
-        Err(_) => return Ok(snapshot), // fresh channel, nothing published yet
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(snapshot),
+        Err(err) => return Err(err).context("device channel directory is unavailable"),
     };
 
     for entry in device_entries.flatten() {
@@ -1028,6 +1039,21 @@ pub fn fetch_channel_snapshot(url: &str, branch: &str) -> Result<ChannelSnapshot
             continue;
         }
         let device_dir = entry.path();
+        let directory_meta = match std::fs::symlink_metadata(&device_dir) {
+            Ok(meta) => meta,
+            Err(_) => { snapshot.warnings.push(format!("devices/{device_id}: metadata unavailable")); continue; }
+        };
+        #[cfg(windows)]
+        let is_reparse = {
+            use std::os::windows::fs::MetadataExt;
+            directory_meta.file_attributes() & 0x400 != 0
+        };
+        #[cfg(not(windows))]
+        let is_reparse = false;
+        if directory_meta.file_type().is_symlink() || is_reparse || !directory_meta.file_type().is_dir() {
+            snapshot.warnings.push(format!("devices/{device_id}: not a real directory"));
+            continue;
+        }
         let library = observe_library(&device_dir.join("library-v1.json"), &device_id);
         if matches!(library, LibraryObservation::Invalid | LibraryObservation::Incomplete) {
             snapshot.warnings.push(format!("devices/{device_id}/library-v1.json: unavailable or incomplete"));
@@ -1175,8 +1201,16 @@ pub fn import_snapshot(store: &SkillStore, snapshot: &ChannelSnapshot) -> Result
         summary.devices += 1;
     }
 
-    for (device_id, observation) in &snapshot.libraries {
-        import_library_observation(store, device_id, observation)?;
+    if !snapshot.head_commit.is_empty() {
+        let observed: std::collections::HashSet<&str> = snapshot.libraries.iter().map(|(id, _)| id.as_str()).collect();
+        for device in store.get_devices()? {
+            if !observed.contains(device.id.as_str()) {
+                import_library_observation(store, &device.id, &LibraryObservation::Missing)?;
+            }
+        }
+        for (device_id, observation) in &snapshot.libraries {
+            import_library_observation(store, device_id, observation)?;
+        }
     }
 
     for report in &snapshot.states {
