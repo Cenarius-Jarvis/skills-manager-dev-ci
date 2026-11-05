@@ -821,9 +821,12 @@ mod tests {
         assert!(scan_agent_skills(&agent, &[]).is_err());
         assert_eq!(scan_agent_skills(&agent, &roots).unwrap()[0].name, "linked");
         junction::delete(&link).unwrap();
-        junction::create(&foreign, &link).unwrap();
+        // junction::delete removes the reparse point but may leave its empty
+        // directory behind, so test a distinct path for the foreign target.
+        let outside_link = agent.join("outside");
+        junction::create(&foreign, &outside_link).unwrap();
         assert!(scan_agent_skills(&agent, &roots).is_err());
-        junction::delete(&link).unwrap();
+        junction::delete(&outside_link).unwrap();
     }
 
     fn instruction(action: &str, skill_name: &str) -> DeviceInstruction {
