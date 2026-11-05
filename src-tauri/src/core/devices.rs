@@ -788,11 +788,156 @@ pub fn publish_state_report(url: &str, branch: &str, report: &DeviceStateReport)
     commit_and_push(&dir, url, branch, "Skills Manager", "devices: report state")
 }
 
+/// Separate, optional library protocol. Legacy clients ignore this sidecar.
+pub const LIBRARY_REPORT_VERSION: u32 = 1;
+const LIBRARY_MAX_BYTES: u64 = 1_048_576;
+const LIBRARY_MAX_SKILLS: usize = 5_000;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LibrarySkillReport {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LibraryReport {
+    pub schema: u32,
+    pub device_id: String,
+    pub reported_at: i64,
+    pub complete: bool,
+    pub skills: Vec<LibrarySkillReport>,
+}
+
+/// Last complete report plus the outcome of the latest observation. Missing,
+/// invalid and incomplete sidecars never erase last-known-good skills.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceLibraryView {
+    pub state: String,
+    pub reported_at: Option<i64>,
+    pub skills: Vec<LibrarySkillReport>,
+}
+impl Default for DeviceLibraryView {
+    fn default() -> Self {
+        Self { state: "missing".into(), reported_at: None, skills: Vec::new() }
+    }
+}
+#[derive(Debug, Clone)]
+pub enum LibraryObservation {
+    Missing,
+    Invalid,
+    Incomplete,
+    Complete(LibraryReport),
+}
+
+pub fn validate_library_report(report: &LibraryReport, expected_device: &str) -> Result<()> {
+    validate_device_id(expected_device)?;
+    if report.schema != LIBRARY_REPORT_VERSION || report.device_id != expected_device || report.reported_at <= 0 {
+        bail!("invalid library report identity, version, or timestamp");
+    }
+    if report.skills.len() > LIBRARY_MAX_SKILLS { bail!("library report has too many skills"); }
+    let mut ids = std::collections::HashSet::new();
+    for skill in &report.skills {
+        if skill.id.trim().is_empty() || skill.id.len() > 128
+            || skill.name.trim().is_empty() || skill.name.len() > 200
+            || skill.id.chars().any(char::is_control)
+            || skill.name.chars().any(char::is_control)
+            || !ids.insert(&skill.id) {
+            bail!("invalid or duplicate library skill");
+        }
+    }
+    Ok(())
+}
+
+/// Build a minimal report from registered Skills Manager metadata only.
+/// This does not imply that the corresponding files are present or deployed.
+pub fn library_report_from_store(store: &SkillStore, device_id: &str, now: i64) -> Result<LibraryReport> {
+    let skills = store.get_all_skills()?.into_iter().map(|record| LibrarySkillReport {
+        id: record.id, name: record.name, enabled: record.enabled,
+    }).collect();
+    let report = LibraryReport { schema: LIBRARY_REPORT_VERSION, device_id: device_id.into(), reported_at: now, complete: true, skills };
+    validate_library_report(&report, device_id)?;
+    if serde_json::to_vec(&report)?.len() as u64 > LIBRARY_MAX_BYTES { bail!("library report is too large"); }
+    Ok(report)
+}
+
+/// Caller must explicitly opt in after reviewing the destination and fields.
+pub fn publish_library_report(url: &str, branch: &str, report: &LibraryReport) -> Result<String> {
+    validate_library_report(report, &report.device_id)?;
+    if !report.complete { bail!("cannot publish an incomplete library report"); }
+    let data = serde_json::to_vec_pretty(report)?;
+    if data.len() as u64 > LIBRARY_MAX_BYTES { bail!("library report is too large"); }
+    let (_tmp, dir) = prepare_working_copy(url, branch)?;
+    ensure_protocol_file(&dir)?;
+    let base = dir.join(device_dir_name(&report.device_id)?);
+    std::fs::create_dir_all(&base)?;
+    std::fs::write(base.join("library-v1.json"), data)?;
+    commit_and_push(&dir, url, branch, "Skills Manager", "devices: report library")
+}
+
+fn observe_library(path: &Path, expected_device: &str) -> LibraryObservation {
+    use std::io::Read;
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return LibraryObservation::Missing,
+        Err(_) => return LibraryObservation::Invalid,
+    };
+    let mut bytes = Vec::new();
+    if file.take(LIBRARY_MAX_BYTES + 1).read_to_end(&mut bytes).is_err()
+        || bytes.len() as u64 > LIBRARY_MAX_BYTES {
+        return LibraryObservation::Invalid;
+    }
+    let report: LibraryReport = match serde_json::from_slice(&bytes) {
+        Ok(report) => report, Err(_) => return LibraryObservation::Invalid,
+    };
+    if validate_library_report(&report, expected_device).is_err() { return LibraryObservation::Invalid; }
+    if !report.complete { return LibraryObservation::Incomplete; }
+    LibraryObservation::Complete(report)
+}
+
+fn library_setting_key(device_id: &str) -> String {
+    format!("device.library.v1.{device_id}")
+}
+
+pub fn library_view(store: &SkillStore, device_id: &str) -> Result<DeviceLibraryView> {
+    validate_device_id(device_id)?;
+    match store.get_setting(&library_setting_key(device_id))? {
+        Some(value) => serde_json::from_str(&value).context("saved library projection is invalid"),
+        None => Ok(DeviceLibraryView::default()),
+    }
+}
+
+fn import_library_observation(store: &SkillStore, device_id: &str, observation: &LibraryObservation) -> Result<()> {
+    let mut view = library_view(store, device_id)?;
+    match observation {
+        LibraryObservation::Missing => view.state = "missing".into(),
+        LibraryObservation::Invalid => view.state = "invalid".into(),
+        LibraryObservation::Incomplete => view.state = "incomplete".into(),
+        LibraryObservation::Complete(report) => {
+            if view.reported_at.map(|old| report.reported_at < old).unwrap_or(false) {
+                view.state = "older".into();
+            } else {
+                view.state = "complete".into();
+                view.reported_at = Some(report.reported_at);
+                view.skills = report.skills.clone();
+            }
+        }
+    }
+    // One SQLite setting per device makes the snapshot replacement atomic and
+    // avoids changing the schema version of an existing Skills Manager DB.
+    store.set_setting(&library_setting_key(device_id), &serde_json::to_string(&view)?)?;
+    Ok(())
+}
+
 #[derive(Debug, Default)]
 pub struct ChannelSnapshot {
     pub head_commit: String,
     pub manifests: Vec<DeviceManifest>,
     pub states: Vec<DeviceStateReport>,
+    pub libraries: Vec<(String, LibraryObservation)>,
     pub instructions: Vec<(DeviceInstruction, String)>,
     pub receipts: Vec<(DeviceReceipt, String)>,
     /// Channel files that failed validation. They are skipped — one bad file
@@ -883,6 +1028,11 @@ pub fn fetch_channel_snapshot(url: &str, branch: &str) -> Result<ChannelSnapshot
             continue;
         }
         let device_dir = entry.path();
+        let library = observe_library(&device_dir.join("library-v1.json"), &device_id);
+        if matches!(library, LibraryObservation::Invalid | LibraryObservation::Incomplete) {
+            snapshot.warnings.push(format!("devices/{device_id}/library-v1.json: unavailable or incomplete"));
+        }
+        snapshot.libraries.push((device_id.clone(), library));
 
         if let Some(manifest) =
             parse_json_file::<DeviceManifest>(&device_dir.join("device.json"), &mut snapshot.warnings)
@@ -1003,6 +1153,7 @@ pub fn import_snapshot(store: &SkillStore, snapshot: &ChannelSnapshot) -> Result
     // (FK) can attach even before the device's own manifest arrives.
     let mut referenced: Vec<String> = manifests_by_id.keys().cloned().collect();
     referenced.extend(states_by_id.keys().cloned());
+    referenced.extend(snapshot.libraries.iter().map(|(id, _)| id.clone()));
     referenced.extend(snapshot.instructions.iter().map(|(i, _)| i.device_id.clone()));
     referenced.extend(snapshot.receipts.iter().map(|(r, _)| r.device_id.clone()));
     referenced.sort();
@@ -1022,6 +1173,10 @@ pub fn import_snapshot(store: &SkillStore, snapshot: &ChannelSnapshot) -> Result
             last_state_commit: None,
         })?;
         summary.devices += 1;
+    }
+
+    for (device_id, observation) in &snapshot.libraries {
+        import_library_observation(store, device_id, observation)?;
     }
 
     for report in &snapshot.states {
