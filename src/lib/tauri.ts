@@ -946,6 +946,12 @@ export interface DeviceInstructionRow {
   executor_version: string | null;
 }
 
+export interface DeviceLibraryView {
+  state: "missing" | "invalid" | "incomplete" | "older" | "complete";
+  reported_at: number | null;
+  skills: { id: string; name: string; enabled: boolean }[];
+}
+
 export interface DeviceWithStatus {
   id: string;
   name: string;
@@ -954,6 +960,7 @@ export interface DeviceWithStatus {
   last_seen_at: number | null;
   online: boolean;
   skill_records: DeviceSkillRecord[];
+  library?: DeviceLibraryView;
 }
 
 export interface DeviceChannelStatus {
