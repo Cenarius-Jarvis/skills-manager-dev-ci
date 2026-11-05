@@ -28,10 +28,19 @@ jobs:
             git fetch --no-tags origin "$commit"
             test "$(git rev-parse FETCH_HEAD)" = "$commit"
             if ! git merge --no-ff --no-edit "$commit"; then
-              git status --short
-              git diff --name-only --diff-filter=U
-              echo "Integration conflict; no candidate branch published."
-              exit 1
+              conflicted="$(git diff --name-only --diff-filter=U)"
+              if [ "$commit" = "7c6a5d5418a925828e0e16ed5079aa1130cdc9f7" ] && [ "$conflicted" = "src-tauri/src/bin/skills-manager-cli.rs" ]; then
+                resolution=3af91e1319f762e5c234f3602001fdbc9e84974e
+                git fetch --no-tags origin "$resolution"
+                git show "$resolution:src-tauri/src/bin/skills-manager-cli.rs" > src-tauri/src/bin/skills-manager-cli.rs
+                git add src-tauri/src/bin/skills-manager-cli.rs
+                git -c core.editor=true merge --continue
+              else
+                git status --short
+                git diff --name-only --diff-filter=U
+                echo "Unexpected integration conflict; no candidate published."
+                exit 1
+              fi
             fi
             git merge-base --is-ancestor "$commit" HEAD
           done
