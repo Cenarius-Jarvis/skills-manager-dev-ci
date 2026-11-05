@@ -147,23 +147,41 @@ mod tests {
             params![cmd.device_id, cmd.agent_key, cmd.root_fingerprint]).unwrap();
     }
 
-    /// Fixture only: local pairing lookup, signature and claim share a write transaction.
-    fn paired_claim(conn: &mut Connection, cmd: &CommandV1, signature: &[u8], local_device: &str, now: i64) -> Result<()> {
+    /// Caller must hold an immediate transaction during the whole operation.
+    fn validate_pairing(conn: &Connection, cmd: &CommandV1, signature: &[u8], local_device: &str, now: i64) -> Result<String> {
         use rusqlite::OptionalExtension;
         if cmd.device_id != local_device { bail!("wrong local device"); }
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let key: Option<Vec<u8>> = tx.query_row(
+        let key: Option<Vec<u8>> = conn.query_row(
             "SELECT public_key FROM fixture_trusted_keys WHERE device_id = ?1 AND key_id = ?2 AND state = 'active'",
             params![cmd.device_id, cmd.key_id], |row| row.get(0)).optional()?;
         let bytes = key.context("key not trusted")?;
         let public_key: [u8; 32] = bytes.try_into().map_err(|_| anyhow::anyhow!("invalid public key"))?;
-        let fingerprint: Option<String> = tx.query_row(
+        let fingerprint: Option<String> = conn.query_row(
             "SELECT fingerprint FROM fixture_authorized_roots WHERE device_id = ?1 AND agent_key = ?2 AND state = 'active'",
             params![cmd.device_id, cmd.agent_key], |row| row.get(0)).optional()?;
         if fingerprint.as_deref() != Some(cmd.root_fingerprint.as_str()) { bail!("root not authorized"); }
         let trust = TrustedKey { key_id: cmd.key_id.clone(), device_id: cmd.device_id.clone(), public_key };
-        let hash = validate_signed_command(cmd, signature, &trust, local_device, now)?;
+        validate_signed_command(cmd, signature, &trust, local_device, now)
+    }
+
+    fn paired_claim(conn: &mut Connection, cmd: &CommandV1, signature: &[u8], local_device: &str, now: i64) -> Result<()> {
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let hash = validate_pairing(&tx, cmd, signature, local_device, now)?;
         insert_claim(&tx, cmd, &hash)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Fixture only: recheck authorization before marking work as started.
+    /// This transition does not perform any filesystem action.
+    fn paired_begin(conn: &mut Connection, cmd: &CommandV1, signature: &[u8], local_device: &str, now: i64) -> Result<()> {
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let hash = validate_pairing(&tx, cmd, signature, local_device, now)?;
+        let changed = tx.execute(
+            "UPDATE fixture_command_claims SET state = 'consuming'
+             WHERE command_id = ?1 AND device_id = ?2 AND payload_hash = ?3 AND state = 'claimed'",
+            params![cmd.command_id, cmd.device_id, hash])?;
+        if changed != 1 { bail!("claim cannot begin"); }
         tx.commit()?;
         Ok(())
     }
