@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use super::devices;
 use super::git_command::git_command;
+#[cfg(not(feature = "isolated-repo-preview"))]
 use super::git_credentials::credential_env_for_url;
 use super::skill_store::SkillStore;
 
