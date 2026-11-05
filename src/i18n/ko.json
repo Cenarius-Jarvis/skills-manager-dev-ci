@@ -1243,5 +1243,24 @@
     "remoteHint": "원격 기기",
     "manage": "기기 관리…",
     "remoteTag": "원격"
+  },
+  "repositorySources": {
+    "title": "독립 Git 저장소",
+    "hint": "각 저장소의 선택한 브랜치에 커밋된 내용만 읽습니다. 커밋되지 않은 작업 공간 변경은 포함되지 않습니다. 읽기는 푸시하거나 배포하지 않습니다.",
+    "name": "소스 이름",
+    "device": "기기 (선택)",
+    "unassigned": "연결되지 않음",
+    "url": "HTTPS 또는 SSH 주소 (자격 증명 제외)",
+    "branch": "브랜치",
+    "root": "스킬 루트 (선택)",
+    "add": "소스 추가",
+    "empty": "추가된 저장소 소스가 없습니다.",
+    "working": "처리 중…",
+    "refresh": "목록 새로고침",
+    "remove": "소스 설정 제거",
+    "refreshFailed": "새로고침에 실패하여 마지막으로 성공한 목록을 유지합니다.",
+    "commit": "커밋",
+    "noSkills": "이 커밋에 스킬이 없습니다.",
+    "notFetched": "성공적으로 읽은 목록이 없습니다."
   }
 }

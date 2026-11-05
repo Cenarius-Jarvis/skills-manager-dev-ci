@@ -15,6 +15,7 @@ import {
   Send,
 } from "lucide-react";
 import { LocalInventoryPreview } from "../components/LocalInventoryPreview";
+import { RepositorySources } from "../components/RepositorySources";
 import * as api from "../lib/tauri";
 import type { DeviceTaskState, DeviceWithStatus } from "../lib/tauri";
 
@@ -408,6 +409,7 @@ export function Devices() {
         </button>
       </div>
 
+      <RepositorySources devices={page?.devices ?? []} />
       <LocalInventoryPreview />
 
       {error && (

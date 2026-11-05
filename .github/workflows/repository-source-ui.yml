@@ -1,0 +1,25 @@
+name: Independent repository source UI checks
+on:
+  push:
+    branches: [codex/repository-sources-readonly]
+    paths: ['src/**', '.github/workflows/repository-source-ui.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  frontend:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Test source isolation and device page
+        run: npm test -- src/components/RepositorySources.test.tsx src/views/Devices.test.tsx
+      - name: Build and check translations
+        run: |
+          npm run build
+          node scripts/check-i18n.mjs

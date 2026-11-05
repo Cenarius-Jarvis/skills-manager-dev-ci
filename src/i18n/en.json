@@ -1257,5 +1257,24 @@
     "remoteHint": "Remote device",
     "manage": "Manage devices…",
     "remoteTag": "Remote"
+  },
+  "repositorySources": {
+    "title": "Independent Git repositories",
+    "hint": "Inspect committed content of each repository and branch. Uncommitted working-tree changes are not included. Reading never pushes or deploys.",
+    "name": "Source name",
+    "device": "Device (optional)",
+    "unassigned": "Unassigned",
+    "url": "HTTPS or SSH URL (no credentials)",
+    "branch": "Branch",
+    "root": "Skills root (optional)",
+    "add": "Add source",
+    "empty": "No repository sources have been added.",
+    "working": "Working…",
+    "refresh": "Refresh snapshot",
+    "remove": "Remove configuration",
+    "refreshFailed": "Refresh failed; the last successful snapshot is retained.",
+    "commit": "Commit",
+    "noSkills": "No skills in this committed snapshot.",
+    "notFetched": "No successful snapshot yet."
   }
 }

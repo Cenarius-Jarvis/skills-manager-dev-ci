@@ -1257,5 +1257,24 @@
     "remoteHint": "远程设备",
     "manage": "管理设备…",
     "remoteTag": "远程"
+  },
+  "repositorySources": {
+    "title": "独立 Git 仓库",
+    "hint": "读取各仓库指定分支已提交的内容，不包含工作区未提交的更改。读取不会推送或部署。",
+    "name": "来源名称",
+    "device": "所属设备（可选）",
+    "unassigned": "未关联设备",
+    "url": "HTTPS 或 SSH 地址（不含凭据）",
+    "branch": "分支",
+    "root": "技能根目录（可选）",
+    "add": "添加来源",
+    "empty": "尚未添加仓库来源。",
+    "working": "处理中…",
+    "refresh": "刷新清单",
+    "remove": "移除来源配置",
+    "refreshFailed": "刷新失败，保留上次成功的清单。",
+    "commit": "提交",
+    "noSkills": "此提交的清单中没有技能。",
+    "notFetched": "尚无成功读取的清单。"
   }
 }

@@ -4,6 +4,7 @@ pub mod devices;
 pub mod git_backup;
 pub mod layers;
 pub mod projects;
+pub mod repository_sources;
 pub mod scan;
 pub mod presets;
 pub mod settings;
