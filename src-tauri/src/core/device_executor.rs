@@ -1371,7 +1371,7 @@ mod tests {
         expired.id = "inst-expired".to_string();
         expired.created_at = now_ts() - 200;
         expired.expires_at = Some(now_ts() - 100);
-        devices::publish_instructions(&url, "devices-test", None, &[valid, unknown, expired]).unwrap();
+        devices::publish_instructions_unsigned_fixture(&url, "devices-test", None, &[valid, unknown, expired]).unwrap();
 
         let refs_before = std::process::Command::new("git").args(["--git-dir", &url, "show-ref"]).output().unwrap().stdout;
         let agent_before = fingerprint_tree(&agent).unwrap();
@@ -1600,7 +1600,7 @@ mod tests {
             expires_at: Some(now_ts() + 86_400),
             created_by: Some("manager".to_string()),
         };
-        devices::publish_instructions(
+        devices::publish_instructions_unsigned_fixture(
             &channel_url,
             "devices-test",
             Some(&crate::core::devices::DeviceManifest {
