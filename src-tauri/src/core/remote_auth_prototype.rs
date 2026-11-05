@@ -143,16 +143,30 @@ mod tests {
         conn
     }
 
-    /// Pairing data is local fixture configuration, never derived from a command.
-    fn initialize_pairing(conn: &mut Connection, trust: &TrustedKey) -> Result<()> {
-        if trust.device_id != "dev-fixture" || !bounded_identifier(&trust.key_id, 64) {
+    struct LocalFixtureApproval {
+        device_id: String,
+        agent_key: String,
+        root_fingerprint: String,
+    }
+
+    fn local_fixture_approval() -> LocalFixtureApproval {
+        LocalFixtureApproval {
+            device_id: "dev-fixture".into(), agent_key: "codex".into(), root_fingerprint: "b".repeat(64),
+        }
+    }
+
+    /// This local fixture is independent of remote command data.
+    fn initialize_pairing(conn: &mut Connection, trust: &TrustedKey, approval: &LocalFixtureApproval) -> Result<()> {
+        if trust.device_id != approval.device_id || approval.device_id != "dev-fixture"
+            || !bounded_identifier(&trust.key_id, 64) || !bounded_identifier(&approval.agent_key, 64)
+            || !digest_string(&approval.root_fingerprint) {
             bail!("invalid local pairing");
         }
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute("INSERT INTO fixture_trusted_keys VALUES (?1, ?2, ?3, 'active')",
             params![trust.device_id, trust.key_id, trust.public_key.as_slice()])?;
         tx.execute("INSERT INTO fixture_authorized_roots VALUES (?1, ?2, ?3, 'active')",
-            params!["dev-fixture", "codex", "b".repeat(64)])?;
+            params![approval.device_id, approval.agent_key, approval.root_fingerprint])?;
         tx.commit()?;
         Ok(())
     }
@@ -224,7 +238,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let mut conn = open_fixture(&temp.path().join("commands.db"));
         let (cmd, trust, signer) = fixture();
-        initialize_pairing(&mut conn, &trust).unwrap();
+        initialize_pairing(&mut conn, &trust, &local_fixture_approval()).unwrap();
         let signature = signer.sign(&canonical(&cmd).unwrap());
         revoke_fixture_root(&mut conn, &cmd.device_id, &cmd.agent_key).unwrap();
         assert!(paired_claim(&mut conn, &cmd, signature.as_ref(), "dev-fixture", 200).is_err());
@@ -239,7 +253,7 @@ mod tests {
         let (_, trust, _) = fixture();
         conn.execute("INSERT INTO fixture_authorized_roots VALUES (?1, ?2, ?3, 'active')",
             params!["dev-fixture", "codex", "b".repeat(64)]).unwrap();
-        assert!(initialize_pairing(&mut conn, &trust).is_err());
+        assert!(initialize_pairing(&mut conn, &trust, &local_fixture_approval()).is_err());
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM fixture_trusted_keys", [], |row| row.get(0)).unwrap();
         assert_eq!(count, 0, "failed pairing must not retain a key");
     }
@@ -250,7 +264,7 @@ mod tests {
         let mut conn = open_fixture(&temp.path().join("commands.db"));
         let (_, mut trust, _) = fixture();
         trust.device_id = "not-the-local-device".into();
-        assert!(initialize_pairing(&mut conn, &trust).is_err());
+        assert!(initialize_pairing(&mut conn, &trust, &local_fixture_approval()).is_err());
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM fixture_trusted_keys", [], |row| row.get(0)).unwrap();
         assert_eq!(count, 0);
     }
@@ -260,7 +274,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let mut conn = open_fixture(&temp.path().join("commands.db"));
         let (cmd, trust, signer) = fixture();
-        initialize_pairing(&mut conn, &trust).unwrap();
+        initialize_pairing(&mut conn, &trust, &local_fixture_approval()).unwrap();
         let signature = signer.sign(&canonical(&cmd).unwrap());
         let mut changed = cmd.clone();
         changed.root_fingerprint = "c".repeat(64);
@@ -285,7 +299,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let mut conn = open_fixture(&temp.path().join("commands.db"));
         let (cmd, trust, signer) = fixture();
-        initialize_pairing(&mut conn, &trust).unwrap();
+        initialize_pairing(&mut conn, &trust, &local_fixture_approval()).unwrap();
         let signature = signer.sign(&canonical(&cmd).unwrap());
         paired_claim(&mut conn, &cmd, signature.as_ref(), "dev-fixture", 200).unwrap();
         revoke_fixture_root(&mut conn, &cmd.device_id, &cmd.agent_key).unwrap();
@@ -299,7 +313,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let mut conn = open_fixture(&temp.path().join("commands.db"));
         let (mut cmd, trust, signer) = fixture();
-        initialize_pairing(&mut conn, &trust).unwrap();
+        initialize_pairing(&mut conn, &trust, &local_fixture_approval()).unwrap();
         cmd.key_id = "unregistered".into();
         let signature = signer.sign(&canonical(&cmd).unwrap());
         assert!(paired_claim(&mut conn, &cmd, signature.as_ref(), "dev-fixture", 200).is_err());
@@ -312,7 +326,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let mut conn = open_fixture(&temp.path().join("commands.db"));
         let (cmd, trust, signer) = fixture();
-        initialize_pairing(&mut conn, &trust).unwrap();
+        initialize_pairing(&mut conn, &trust, &local_fixture_approval()).unwrap();
         let signature = signer.sign(&canonical(&cmd).unwrap());
         paired_claim(&mut conn, &cmd, signature.as_ref(), "dev-fixture", 200).unwrap();
         let mut altered = cmd.clone();
@@ -333,7 +347,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let mut conn = open_fixture(&temp.path().join("commands.db"));
         let (cmd, trust, signer) = fixture();
-        initialize_pairing(&mut conn, &trust).unwrap();
+        initialize_pairing(&mut conn, &trust, &local_fixture_approval()).unwrap();
         let signature = signer.sign(&canonical(&cmd).unwrap());
         paired_claim(&mut conn, &cmd, signature.as_ref(), "dev-fixture", 200).unwrap();
         revoke_fixture_root(&mut conn, &cmd.device_id, &cmd.agent_key).unwrap();
@@ -349,7 +363,7 @@ mod tests {
         let db = temp.path().join("commands.db");
         let mut conn = open_fixture(&db);
         let (cmd, trust, signer) = fixture();
-        initialize_pairing(&mut conn, &trust).unwrap();
+        initialize_pairing(&mut conn, &trust, &local_fixture_approval()).unwrap();
         let signature = signer.sign(&canonical(&cmd).unwrap()).as_ref().to_vec();
         paired_claim(&mut conn, &cmd, &signature, "dev-fixture", 200).unwrap();
         drop(conn);
@@ -384,7 +398,7 @@ mod tests {
         let db = temp.path().join("commands.db");
         let mut conn = open_fixture(&db);
         let (cmd, trust, signer) = fixture();
-        initialize_pairing(&mut conn, &trust).unwrap();
+        initialize_pairing(&mut conn, &trust, &local_fixture_approval()).unwrap();
         drop(conn);
         let signature = signer.sign(&canonical(&cmd).unwrap()).as_ref().to_vec();
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
