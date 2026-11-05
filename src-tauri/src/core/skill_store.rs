@@ -717,6 +717,25 @@ impl SkillStore {
         }
     }
 
+    /// Atomically update one device's non-secret library projection across
+    /// concurrent GUI/CLI refreshes. Older reports must not win a read/write race.
+    pub(crate) fn update_device_library_projection<F>(&self, device_id: &str, update: F) -> Result<()>
+    where
+        F: FnOnce(Option<String>) -> Result<String>,
+    {
+        super::devices::validate_device_id(device_id)?;
+        let key = format!("device.library.v1.{device_id}");
+        let conn = self.conn.lock().unwrap();
+        let tx = conn.unchecked_transaction()?;
+        let current: Option<String> = tx.query_row(
+            "SELECT value FROM settings WHERE key = ?1", params![key], |row| row.get(0)
+        ).optional()?;
+        let next = update(current)?;
+        tx.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)", params![key, next])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
         let stored = if SENSITIVE_KEYS.contains(&key) {
             crypto::encrypt(&self.secret_key, value)?

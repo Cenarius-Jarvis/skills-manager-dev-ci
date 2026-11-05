@@ -788,11 +788,171 @@ pub fn publish_state_report(url: &str, branch: &str, report: &DeviceStateReport)
     commit_and_push(&dir, url, branch, "Skills Manager", "devices: report state")
 }
 
+/// Separate, optional library protocol. Legacy clients ignore this sidecar.
+pub const LIBRARY_REPORT_VERSION: u32 = 1;
+const LIBRARY_MAX_BYTES: u64 = 1_048_576;
+const LIBRARY_MAX_SKILLS: usize = 5_000;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LibrarySkillReport {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LibraryReport {
+    pub schema: u32,
+    pub device_id: String,
+    pub reported_at: i64,
+    pub complete: bool,
+    pub skills: Vec<LibrarySkillReport>,
+}
+
+/// Last complete report plus the outcome of the latest observation. Missing,
+/// invalid and incomplete sidecars never erase last-known-good skills.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceLibraryView {
+    pub state: String,
+    pub reported_at: Option<i64>,
+    pub skills: Vec<LibrarySkillReport>,
+}
+impl Default for DeviceLibraryView {
+    fn default() -> Self {
+        Self { state: "missing".into(), reported_at: None, skills: Vec::new() }
+    }
+}
+#[derive(Debug, Clone)]
+pub enum LibraryObservation {
+    Missing,
+    Invalid,
+    Incomplete,
+    Complete(LibraryReport),
+}
+
+pub fn validate_library_report(report: &LibraryReport, expected_device: &str) -> Result<()> {
+    validate_device_id(expected_device)?;
+    if report.schema != LIBRARY_REPORT_VERSION || report.device_id != expected_device || report.reported_at <= 0
+        || report.reported_at > chrono::Utc::now().timestamp().saturating_add(86_400) {
+        bail!("invalid library report identity, version, or timestamp");
+    }
+    if report.skills.len() > LIBRARY_MAX_SKILLS { bail!("library report has too many skills"); }
+    let mut ids = std::collections::HashSet::new();
+    for skill in &report.skills {
+        if skill.id.trim().is_empty() || skill.id.len() > 128
+            || skill.name.trim().is_empty() || skill.name.len() > 200
+            || skill.id.chars().any(char::is_control)
+            || skill.name.chars().any(char::is_control)
+            || !ids.insert(&skill.id) {
+            bail!("invalid or duplicate library skill");
+        }
+    }
+    Ok(())
+}
+
+/// Build a minimal report from registered Skills Manager metadata only.
+/// This does not imply that the corresponding files are present or deployed.
+pub fn library_report_from_store(store: &SkillStore, device_id: &str, now: i64) -> Result<LibraryReport> {
+    let skills = store.get_all_skills()?.into_iter().map(|record| LibrarySkillReport {
+        id: record.id, name: record.name, enabled: record.enabled,
+    }).collect();
+    let report = LibraryReport { schema: LIBRARY_REPORT_VERSION, device_id: device_id.into(), reported_at: now, complete: true, skills };
+    validate_library_report(&report, device_id)?;
+    if serde_json::to_vec(&report)?.len() as u64 > LIBRARY_MAX_BYTES { bail!("library report is too large"); }
+    Ok(report)
+}
+
+/// Caller must explicitly opt in after reviewing the destination and fields.
+pub fn publish_library_report(url: &str, branch: &str, report: &LibraryReport) -> Result<String> {
+    validate_library_report(report, &report.device_id)?;
+    if !report.complete { bail!("cannot publish an incomplete library report"); }
+    let data = serde_json::to_vec_pretty(report)?;
+    if data.len() as u64 > LIBRARY_MAX_BYTES { bail!("library report is too large"); }
+    let (_tmp, dir) = prepare_working_copy(url, branch)?;
+    ensure_protocol_file(&dir)?;
+    let base = dir.join(device_dir_name(&report.device_id)?);
+    std::fs::create_dir_all(&base)?;
+    std::fs::write(base.join("library-v1.json"), data)?;
+    commit_and_push(&dir, url, branch, "Skills Manager", "devices: report library")
+}
+
+fn observe_library(path: &Path, expected_device: &str) -> LibraryObservation {
+    use std::io::Read;
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return LibraryObservation::Missing,
+        Err(_) => return LibraryObservation::Invalid,
+    };
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if meta.file_attributes() & 0x400 != 0 { return LibraryObservation::Invalid; }
+    }
+    if !meta.file_type().is_file() || meta.file_type().is_symlink() { return LibraryObservation::Invalid; }
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return LibraryObservation::Invalid,
+    };
+    let mut bytes = Vec::new();
+    if file.take(LIBRARY_MAX_BYTES + 1).read_to_end(&mut bytes).is_err()
+        || bytes.len() as u64 > LIBRARY_MAX_BYTES {
+        return LibraryObservation::Invalid;
+    }
+    let report: LibraryReport = match serde_json::from_slice(&bytes) {
+        Ok(report) => report, Err(_) => return LibraryObservation::Invalid,
+    };
+    if validate_library_report(&report, expected_device).is_err() { return LibraryObservation::Invalid; }
+    if !report.complete { return LibraryObservation::Incomplete; }
+    LibraryObservation::Complete(report)
+}
+
+fn library_setting_key(device_id: &str) -> String {
+    format!("device.library.v1.{device_id}")
+}
+
+pub fn library_view(store: &SkillStore, device_id: &str) -> Result<DeviceLibraryView> {
+    validate_device_id(device_id)?;
+    match store.get_setting(&library_setting_key(device_id))? {
+        Some(value) => serde_json::from_str(&value).context("saved library projection is invalid"),
+        None => Ok(DeviceLibraryView::default()),
+    }
+}
+
+fn import_library_observation(store: &SkillStore, device_id: &str, observation: &LibraryObservation) -> Result<()> {
+    store.update_device_library_projection(device_id, |current| {
+        let mut view: DeviceLibraryView = match current {
+            Some(value) => serde_json::from_str(&value).context("saved library projection is invalid")?,
+            None => DeviceLibraryView::default(),
+        };
+        match observation {
+            LibraryObservation::Missing => view.state = "missing".into(),
+            LibraryObservation::Invalid => view.state = "invalid".into(),
+            LibraryObservation::Incomplete => view.state = "incomplete".into(),
+            LibraryObservation::Complete(report) => {
+                validate_library_report(report, device_id)?;
+                if !report.complete { bail!("incomplete report cannot replace a complete library"); }
+                if view.reported_at.map(|old| report.reported_at < old).unwrap_or(false) {
+                    view.state = "older".into();
+                } else {
+                    view.state = "complete".into();
+                    view.reported_at = Some(report.reported_at);
+                    view.skills = report.skills.clone();
+                }
+            }
+        }
+        Ok(serde_json::to_string(&view)?)
+    })
+}
+
 #[derive(Debug, Default)]
 pub struct ChannelSnapshot {
     pub head_commit: String,
     pub manifests: Vec<DeviceManifest>,
     pub states: Vec<DeviceStateReport>,
+    pub libraries: Vec<(String, LibraryObservation)>,
     pub instructions: Vec<(DeviceInstruction, String)>,
     pub receipts: Vec<(DeviceReceipt, String)>,
     /// Channel files that failed validation. They are skipped — one bad file
@@ -868,10 +1028,12 @@ pub fn fetch_channel_snapshot(url: &str, branch: &str) -> Result<ChannelSnapshot
     let devices_root = dir.join("devices");
     let device_entries = match std::fs::read_dir(&devices_root) {
         Ok(entries) => entries,
-        Err(_) => return Ok(snapshot), // fresh channel, nothing published yet
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(snapshot),
+        Err(err) => return Err(err).context("device channel directory is unavailable"),
     };
 
-    for entry in device_entries.flatten() {
+    for entry in device_entries {
+        let entry = entry.context("device channel entry is unavailable")?;
         let device_id = entry.file_name().to_string_lossy().to_string();
         if device_id.starts_with('.') {
             continue;
@@ -883,6 +1045,26 @@ pub fn fetch_channel_snapshot(url: &str, branch: &str) -> Result<ChannelSnapshot
             continue;
         }
         let device_dir = entry.path();
+        let directory_meta = match std::fs::symlink_metadata(&device_dir) {
+            Ok(meta) => meta,
+            Err(_) => { snapshot.warnings.push(format!("devices/{device_id}: metadata unavailable")); continue; }
+        };
+        #[cfg(windows)]
+        let is_reparse = {
+            use std::os::windows::fs::MetadataExt;
+            directory_meta.file_attributes() & 0x400 != 0
+        };
+        #[cfg(not(windows))]
+        let is_reparse = false;
+        if directory_meta.file_type().is_symlink() || is_reparse || !directory_meta.file_type().is_dir() {
+            snapshot.warnings.push(format!("devices/{device_id}: not a real directory"));
+            continue;
+        }
+        let library = observe_library(&device_dir.join("library-v1.json"), &device_id);
+        if matches!(library, LibraryObservation::Invalid | LibraryObservation::Incomplete) {
+            snapshot.warnings.push(format!("devices/{device_id}/library-v1.json: unavailable or incomplete"));
+        }
+        snapshot.libraries.push((device_id.clone(), library));
 
         if let Some(manifest) =
             parse_json_file::<DeviceManifest>(&device_dir.join("device.json"), &mut snapshot.warnings)
@@ -1003,6 +1185,7 @@ pub fn import_snapshot(store: &SkillStore, snapshot: &ChannelSnapshot) -> Result
     // (FK) can attach even before the device's own manifest arrives.
     let mut referenced: Vec<String> = manifests_by_id.keys().cloned().collect();
     referenced.extend(states_by_id.keys().cloned());
+    referenced.extend(snapshot.libraries.iter().map(|(id, _)| id.clone()));
     referenced.extend(snapshot.instructions.iter().map(|(i, _)| i.device_id.clone()));
     referenced.extend(snapshot.receipts.iter().map(|(r, _)| r.device_id.clone()));
     referenced.sort();
@@ -1022,6 +1205,18 @@ pub fn import_snapshot(store: &SkillStore, snapshot: &ChannelSnapshot) -> Result
             last_state_commit: None,
         })?;
         summary.devices += 1;
+    }
+
+    if !snapshot.head_commit.is_empty() {
+        let observed: std::collections::HashSet<&str> = snapshot.libraries.iter().map(|(id, _)| id.as_str()).collect();
+        for device in store.get_devices()? {
+            if !observed.contains(device.id.as_str()) {
+                import_library_observation(store, &device.id, &LibraryObservation::Missing)?;
+            }
+        }
+        for (device_id, observation) in &snapshot.libraries {
+            import_library_observation(store, device_id, observation)?;
+        }
     }
 
     for report in &snapshot.states {
@@ -1533,4 +1728,142 @@ mod tests {
         let rows = store.get_device_instructions(None).unwrap();
         assert_eq!(rows[0].state, TASK_STATE_FAILED, "impersonated receipt must not flip state");
     }
+    fn fixture_library(device_id: &str, timestamp: i64, names: &[&str]) -> LibraryReport {
+        LibraryReport {
+            schema: LIBRARY_REPORT_VERSION, device_id: device_id.into(), reported_at: timestamp,
+            complete: true,
+            skills: names.iter().enumerate().map(|(i, name)| LibrarySkillReport {
+                id: format!("skill-{i}"), name: (*name).into(), enabled: true,
+            }).collect(),
+        }
+    }
+
+    #[test]
+    fn device_library_report_uses_only_minimal_registered_metadata() {
+        use crate::core::skill_store::SkillRecord;
+        let temp = tempfile::tempdir().unwrap();
+        let store = SkillStore::new(&temp.path().join("store.db")).unwrap();
+        store.insert_skill(&SkillRecord {
+            id: "sample-id".into(), name: "not-deployed".into(), description: Some("private-description".into()),
+            source_type: "git".into(), source_ref: Some("private-source-url".into()),
+            source_ref_resolved: None, source_subpath: None, source_branch: None,
+            source_revision: None, remote_revision: None, central_path: "private-local-path".into(),
+            content_hash: Some("private-hash".into()), enabled: true, created_at: 1, updated_at: 1,
+            status: "installed".into(), update_status: "unknown".into(),
+            last_checked_at: None, last_check_error: Some("private-error".into()),
+        }).unwrap();
+        let report = library_report_from_store(&store, "dev-test", 100).unwrap();
+        assert_eq!(report.skills.len(), 1);
+        assert_eq!(report.skills[0].name, "not-deployed");
+        let json = serde_json::to_string(&report).unwrap();
+        for secret in ["private-description", "private-source-url", "private-local-path", "private-hash", "private-error"] {
+            assert!(!json.contains(secret));
+        }
+        assert!(store.get_device_skill_records(None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn device_library_report_preserves_last_good_for_missing_invalid_incomplete_and_older() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = SkillStore::new(&temp.path().join("store.db")).unwrap();
+        let good = fixture_library("dev-test", 20, &["undistributed"]);
+        import_library_observation(&store, "dev-test", &LibraryObservation::Complete(good)).unwrap();
+        for (observation, state) in [
+            (LibraryObservation::Missing, "missing"),
+            (LibraryObservation::Invalid, "invalid"),
+            (LibraryObservation::Incomplete, "incomplete"),
+            (LibraryObservation::Complete(fixture_library("dev-test", 10, &[])), "older"),
+        ] {
+            import_library_observation(&store, "dev-test", &observation).unwrap();
+            let view = library_view(&store, "dev-test").unwrap();
+            assert_eq!(view.state, state);
+            assert_eq!(view.reported_at, Some(20));
+            assert_eq!(view.skills[0].name, "undistributed");
+        }
+        import_library_observation(&store, "dev-test",
+            &LibraryObservation::Complete(fixture_library("dev-test", 30, &[]))).unwrap();
+        let view = library_view(&store, "dev-test").unwrap();
+        assert_eq!(view.state, "complete");
+        assert_eq!(view.reported_at, Some(30));
+        assert!(view.skills.is_empty(), "a complete empty report is authoritative");
+        assert_eq!(library_view(&store, "dev-other").unwrap().state, "missing");
+    }
+
+    #[test]
+    fn device_library_report_concurrent_refresh_never_replaces_newer_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(SkillStore::new(&temp.path().join("store.db")).unwrap());
+        let mut threads = Vec::new();
+        for timestamp in 1..=16 {
+            let store = store.clone();
+            threads.push(std::thread::spawn(move || {
+                let report = fixture_library("dev-test", timestamp, &["one"]);
+                import_library_observation(&store, "dev-test", &LibraryObservation::Complete(report)).unwrap();
+            }));
+        }
+        for thread in threads { thread.join().unwrap(); }
+        assert_eq!(library_view(&store, "dev-test").unwrap().reported_at, Some(16));
+    }
+
+    #[test]
+    fn device_library_report_rejects_bad_identity_unknown_fields_and_oversized_input() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("library-v1.json");
+        let report = fixture_library("dev-one", 100, &["one"]);
+        std::fs::write(&path, serde_json::to_vec(&report).unwrap()).unwrap();
+        assert!(matches!(observe_library(&path, "dev-one"), LibraryObservation::Complete(_)));
+        assert!(matches!(observe_library(&path, "dev-two"), LibraryObservation::Invalid));
+        let mut incomplete = report.clone(); incomplete.complete = false;
+        std::fs::write(&path, serde_json::to_vec(&incomplete).unwrap()).unwrap();
+        assert!(matches!(observe_library(&path, "dev-one"), LibraryObservation::Incomplete));
+        let mut value = serde_json::to_value(&report).unwrap();
+        value["source_url"] = serde_json::json!("secret");
+        std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(matches!(observe_library(&path, "dev-one"), LibraryObservation::Invalid));
+        std::fs::write(&path, vec![b'x'; LIBRARY_MAX_BYTES as usize + 1]).unwrap();
+        assert!(matches!(observe_library(&path, "dev-one"), LibraryObservation::Invalid));
+    }
+
+    #[test]
+    fn device_library_report_two_devices_roundtrip_over_local_git_channel() {
+        let temp = tempfile::tempdir().unwrap();
+        let remote = temp.path().join("fake-channel.git");
+        assert!(std::process::Command::new("git").args(["init", "--bare"]).arg(&remote).output().unwrap().status.success());
+        let url = remote.to_string_lossy().to_string();
+        let first = fixture_library("dev-main", 100, &["local-only"]);
+        let second = fixture_library("dev-remote", 101, &["remote-only", "not-deployed"]);
+        publish_library_report(&url, "test-channel", &first).unwrap();
+        publish_library_report(&url, "test-channel", &second).unwrap();
+        let legacy_state = DeviceStateReport {
+            schema: DEVICE_PROTOCOL_VERSION, device_id: "dev-remote".into(), reported_at: 102,
+            executing: vec![], agents: vec![AgentStateReport {
+                key: "codex".into(), skills: vec![AgentSkillReport {
+                    name: "remote-only".into(), content_hash: None, deployed_at: None,
+                }],
+            }],
+        };
+        publish_state_report(&url, "test-channel", &legacy_state).unwrap();
+        let old_json = serde_json::to_vec(&legacy_state).unwrap();
+        assert!(serde_json::from_slice::<DeviceStateReport>(&old_json).is_ok());
+        assert!(!String::from_utf8(old_json).unwrap().contains("library"));
+        let snapshot = fetch_channel_snapshot(&url, "test-channel").unwrap();
+        let store = SkillStore::new(&temp.path().join("projected.db")).unwrap();
+        import_snapshot(&store, &snapshot).unwrap();
+        let remote_lib = library_view(&store, "dev-remote").unwrap();
+        assert_eq!(remote_lib.skills.len(), 2);
+        assert!(remote_lib.skills.iter().any(|s| s.name == "not-deployed"));
+        assert_eq!(store.get_device_skill_records(Some("dev-remote")).unwrap().len(), 1);
+        assert_eq!(library_view(&store, "dev-main").unwrap().skills[0].name, "local-only");
+
+        let (_tmp, work) = prepare_working_copy(&url, "test-channel").unwrap();
+        std::fs::remove_file(work.join("devices/dev-remote/library-v1.json")).unwrap();
+        commit_and_push(&work, &url, "test-channel", "test", "remove fixture report").unwrap();
+        let absent = fetch_channel_snapshot(&url, "test-channel").unwrap();
+        import_snapshot(&store, &absent).unwrap();
+        let after = library_view(&store, "dev-remote").unwrap();
+        assert_eq!(after.state, "missing");
+        assert_eq!(after.skills.len(), 2);
+        assert_eq!(after.reported_at, Some(101));
+    }
+
 }
