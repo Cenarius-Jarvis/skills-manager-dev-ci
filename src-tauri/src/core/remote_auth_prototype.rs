@@ -154,6 +154,47 @@ mod tests {
     }
 
     #[test]
+    fn remote_auth_prototype_subprocess_worker() {
+        let fixture_path = match std::env::var_os("SM_AUTH_FIXTURE") {
+            Some(value) => std::path::PathBuf::from(value),
+            None => return,
+        };
+        let value: serde_json::Value = serde_json::from_slice(&std::fs::read(fixture_path).unwrap()).unwrap();
+        let cmd: CommandV1 = serde_json::from_value(value["command"].clone()).unwrap();
+        let public = hex::decode(value["public_key"].as_str().unwrap()).unwrap();
+        let signature = hex::decode(value["signature"].as_str().unwrap()).unwrap();
+        let mut public_key = [0u8; 32];
+        public_key.copy_from_slice(&public);
+        let trust = TrustedKey { key_id: cmd.key_id.clone(), device_id: cmd.device_id.clone(), public_key };
+        let mut conn = open_fixture(std::path::Path::new(value["database"].as_str().unwrap()));
+        let accepted = verify_and_claim(&mut conn, &cmd, &signature, &trust, "dev-fixture", 200).is_ok();
+        assert_eq!(accepted, std::env::var("SM_AUTH_EXPECT").unwrap() == "accept");
+    }
+
+    #[test]
+    fn remote_auth_prototype_replay_is_rejected_across_processes() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = temp.path().join("commands.db");
+        drop(open_fixture(&db));
+        let (cmd, trust, signer) = fixture();
+        let signature = signer.sign(&canonical(&cmd).unwrap());
+        let payload = serde_json::json!({
+            "command": cmd, "public_key": hex::encode(trust.public_key),
+            "signature": hex::encode(signature.as_ref()), "database": db.to_str().unwrap()
+        });
+        let fixture_path = temp.path().join("fixture.json");
+        std::fs::write(&fixture_path, serde_json::to_vec(&payload).unwrap()).unwrap();
+        for expectation in ["accept", "reject"] {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "core::remote_auth_prototype::tests::remote_auth_prototype_subprocess_worker"])
+                .env("SM_AUTH_FIXTURE", &fixture_path)
+                .env("SM_AUTH_EXPECT", expectation)
+                .status().unwrap();
+            assert!(status.success(), "independent verifier process failed");
+        }
+    }
+
+    #[test]
     fn remote_auth_prototype_one_concurrent_claim_wins() {
         let temp = tempfile::tempdir().unwrap();
         let db = temp.path().join("commands.db");
