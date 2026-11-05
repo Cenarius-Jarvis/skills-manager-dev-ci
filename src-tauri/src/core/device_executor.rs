@@ -218,17 +218,30 @@ fn hash_file(path: &Path) -> Result<String> {
     Ok(hex::encode(digest))
 }
 
+/// Reject all links and Windows reparse points without following them.
+/// Windows reparse attributes also cover junctions that report as directories.
+fn is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        metadata.file_type().is_symlink()
+            || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
+}
+
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     std::fs::create_dir_all(dst)
         .with_context(|| format!("failed to create {}", dst.display()))?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
-        let file_type = entry.file_type()?;
-        #[cfg(windows)]
-        if file_type.is_dir() && junction::exists(entry.path())? {
-            bail!("refusing junction in skill source: {}", entry.path().display());
-        }
-        if file_type.is_symlink() {
+        let metadata = std::fs::symlink_metadata(entry.path())?;
+        let file_type = metadata.file_type();
+        if is_link_or_reparse(&metadata) {
             bail!(
                 "refusing symlink in skill source: {}",
                 entry.path().display()
@@ -255,11 +268,7 @@ fn fingerprint_tree(root: &Path) -> Result<String> {
     fn visit(path: &Path, relative: &Path, hasher: &mut Sha256) -> Result<()> {
         let meta = std::fs::symlink_metadata(path)?;
         let ty = meta.file_type();
-        #[cfg(windows)]
-        if ty.is_dir() && junction::exists(path)? {
-            bail!("refusing junction: {}", path.display());
-        }
-        if ty.is_symlink() {
+        if is_link_or_reparse(&meta) {
             bail!("refusing symbolic link: {}", path.display());
         }
         let rel = relative.to_str().context("non-UTF8 path in deployed skill")?;
@@ -351,7 +360,7 @@ pub fn apply_deploy(
         return Err(reject(REASON_INVALID_INSTRUCTION, err.to_string()));
     }
     if !std::fs::symlink_metadata(source_dir)
-        .map(|m| m.file_type().is_dir())
+        .map(|m| m.file_type().is_dir() && !is_link_or_reparse(&m))
         .unwrap_or(false)
     {
         return Err(reject(REASON_INVALID_INSTRUCTION, "skill source must be a real directory"));
@@ -1031,6 +1040,22 @@ mod tests {
         assert_eq!(std::fs::read_to_string(target.join("SKILL.md")).unwrap(), "updated");
         apply_undeploy(&agent, &instruction("undeploy", "demo"), "c3", &mut journal).unwrap();
         assert!(!target.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn junction_source_root_is_rejected() {
+        let env = TestEnv::new();
+        let agent = env.base.join("agent");
+        std::fs::create_dir_all(&agent).unwrap();
+        let source = skill_source(&env.base, "demo");
+        let link = env.base.join("linked-source");
+        junction::create(&source, &link).unwrap();
+        let inst = instruction("deploy", "demo");
+        let mut journal = env.journal();
+        let error = apply_deploy(&agent, &inst, &link, "c1", &mut journal).unwrap_err();
+        assert_eq!(error.reason, REASON_INVALID_INSTRUCTION);
+        assert!(!agent.join("demo").exists());
     }
 
     #[cfg(windows)]
