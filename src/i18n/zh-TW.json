@@ -288,7 +288,7 @@
     "devicePlatformLabel": "平台（可選）",
     "addDevice": "新增裝置",
     "instructTitle": "下發部署請求",
-    "instructHint": "請求會發布到通道；下面的狀態只有在該裝置自己回報結果後才會變成「已部署」。",
+    "instructHint": "遠端部署暫時無法使用：目前版本不會發佈未簽署指令。裝置配對與簽署功能仍在開發。",
     "actionLabel": "動作",
     "skillUrlLabel": "技能倉庫地址",
     "skillBranchLabel": "分支（可選）",
