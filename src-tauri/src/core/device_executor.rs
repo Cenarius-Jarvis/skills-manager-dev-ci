@@ -1367,6 +1367,7 @@ mod tests {
         let config = ExecutorConfig {
             url: url.clone(), branch: "devices-test".to_string(), device_id: "dev-test".to_string(),
             agents: vec![AgentMapping { key: "codex".to_string(), dir: agent.clone() }],
+            inventory_allowed_roots: vec![],
             max_instructions: 10, dry_run: true,
         };
         assert!(!state.exists());
@@ -1400,7 +1401,7 @@ mod tests {
         let config = ExecutorConfig {
             url: env.base.join("does-not-exist.git").to_string_lossy().to_string(),
             branch: "devices-test".to_string(), device_id: "dev-test".to_string(),
-            agents: vec![], max_instructions: 10, dry_run: true,
+            agents: vec![], inventory_allowed_roots: vec![], max_instructions: 10, dry_run: true,
         };
         assert!(run_once(&config).is_err());
         assert!(!env.base.join(EXECUTOR_STATE_DIR).exists());
