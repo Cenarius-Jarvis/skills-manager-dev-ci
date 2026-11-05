@@ -770,6 +770,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         print_json(&report, cli.json);
         return Ok(());
     }
+    // Block legacy unsigned execution before opening or migrating the store.
+    if let Commands::Devices(DevicesArgs {
+        command: DevicesCommand::RunOnce { dry_run: false, .. }
+    }) = &cli.command {
+        bail!("remote execution is disabled until authenticated commands and recovery are available");
+    }
     if let Commands::Repo(RepoArgs {
         command: command @ (RepoCommand::SetPath { .. } | RepoCommand::ResetPath),
     }) = &cli.command
@@ -3558,6 +3564,25 @@ mod tests {
         central_repo::set_runtime_base_dir_override(None);
         assert!(result.is_err());
         assert!(!base.exists(), "report command must not create the manager store");
+    }
+
+    #[test]
+    fn executor_unsigned_run_is_blocked_before_store_initialization() {
+        let temp = tempdir().unwrap();
+        let base = temp.path().join("absent-app-state");
+        central_repo::set_runtime_base_dir_override(Some(base.clone()));
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) { central_repo::set_runtime_base_dir_override(None); }
+        }
+        let _reset = Reset;
+        let cli = Cli::try_parse_from([
+            "skills-manager-cli", "devices", "run-once", "--url", "fixture.git",
+            "--device-id", "dev-test", "--agent", "codex=fake-agent",
+        ]).unwrap();
+        let err = run(cli).unwrap_err();
+        assert!(err.to_string().contains("remote execution is disabled"));
+        assert!(!base.exists(), "blocked run must not initialize the store");
     }
 
     #[test]
