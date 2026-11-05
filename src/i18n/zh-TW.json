@@ -290,7 +290,15 @@
     "agentKeyLabel": "目標 Agent",
     "createInstruction": "下發",
     "instructionCreated": "部署請求已發布",
-    "manageTitle": "裝置管理"
+    "manageTitle": "裝置管理",
+    "refreshFailed": "重新整理裝置通道失敗。",
+    "cachedProjectionNotice": "這裡顯示的是本機儲存的裝置回報紀錄，可能未包含裝置目前的全部技能。",
+    "channelNotChecked": "目前頁面尚未檢查通道。",
+    "channelIncomplete": "最近一次重新整理發現問題，裝置資訊可能不完整：",
+    "channelNoWarnings": "最近一次通道重新整理未回報問題。",
+    "currentNoDevices": "本機紀錄中沒有裝置。",
+    "currentNoSkillRecords": "本機暫無該裝置的 Agent 技能紀錄。",
+    "currentNoInstructions": "本機紀錄中沒有部署請求。"
   },
   "firstRun": {
     "title": "全新開始，還是從備份還原？",
