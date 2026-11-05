@@ -288,7 +288,7 @@
     "devicePlatformLabel": "플랫폼(선택)",
     "addDevice": "기기 추가",
     "instructTitle": "배포 요청 보내기",
-    "instructHint": "요청은 채널에 게시됩니다; 아래 상태는 기기 자신이 결과를 보고한 후에만 \"배포됨\"으로 바뀝니다.",
+    "instructHint": "기기 연결과 서명된 명령 기능을 개발 중이므로 원격 배포를 사용할 수 없습니다. 서명되지 않은 지시를 게시할 수 없습니다.",
     "actionLabel": "동작",
     "skillUrlLabel": "스킬 저장소 URL",
     "skillBranchLabel": "브랜치(선택)",
