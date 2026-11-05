@@ -427,6 +427,77 @@ mod tests {
         assert_eq!(state, if began { "consuming" } else { "revoked_after_claim" });
     }
 
+    fn interrupted_fixture(temp: &std::path::Path) -> (Connection, CommandV1, Vec<u8>) {
+        let mut conn = open_fixture(&temp.join("commands.db"));
+        let (cmd, trust, signer) = fixture();
+        initialize_pairing(&mut conn, &trust, &local_fixture_approval()).unwrap();
+        let signature = signer.sign(&canonical(&cmd).unwrap()).as_ref().to_vec();
+        paired_claim(&mut conn, &cmd, &signature, "dev-fixture", 200).unwrap();
+        paired_begin(&mut conn, &cmd, &signature, "dev-fixture", 200).unwrap();
+        (conn, cmd, signature)
+    }
+
+    #[test]
+    fn remote_auth_prototype_recovery_blocks_without_replay_when_target_absent() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("fake-agent");
+        std::fs::create_dir_all(&root).unwrap();
+        let (mut conn, cmd, signature) = interrupted_fixture(temp.path());
+        assert_eq!(block_interrupted_fixture(&mut conn, &cmd.command_id, &root).unwrap(), "no_target");
+        assert!(!root.join("sample").exists());
+        assert!(paired_begin(&mut conn, &cmd, &signature, "dev-fixture", 200).is_err());
+        assert!(paired_claim(&mut conn, &cmd, &signature, "dev-fixture", 200).is_err());
+        drop(conn);
+        let conn = open_fixture(&temp.path().join("commands.db"));
+        let (state, class): (String, String) = conn.query_row(
+            "SELECT c.state, r.classification FROM fixture_command_claims c JOIN fixture_recovery_cases r USING(command_id) WHERE c.command_id = ?1",
+            params![cmd.command_id], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        assert_eq!((state.as_str(), class.as_str()), ("blocked_recovery", "no_target"));
+    }
+
+    #[test]
+    fn remote_auth_prototype_recovery_preserves_existing_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("fake-agent");
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("sample");
+        std::fs::write(&target, b"do-not-modify").unwrap();
+        let (mut conn, cmd, signature) = interrupted_fixture(temp.path());
+        assert_eq!(block_interrupted_fixture(&mut conn, &cmd.command_id, &root).unwrap(), "target_exists");
+        assert_eq!(std::fs::read(&target).unwrap(), b"do-not-modify");
+        assert!(paired_begin(&mut conn, &cmd, &signature, "dev-fixture", 200).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_auth_prototype_recovery_refuses_target_symlink() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("fake-agent");
+        let external = temp.path().join("sentinel");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&external).unwrap();
+        std::fs::write(external.join("safe.txt"), b"safe").unwrap();
+        std::os::unix::fs::symlink(&external, root.join("sample")).unwrap();
+        let (mut conn, cmd, _) = interrupted_fixture(temp.path());
+        assert_eq!(block_interrupted_fixture(&mut conn, &cmd.command_id, &root).unwrap(), "unsafe_target");
+        assert_eq!(std::fs::read(external.join("safe.txt")).unwrap(), b"safe");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn remote_auth_prototype_recovery_refuses_target_junction() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("fake-agent");
+        let external = temp.path().join("sentinel");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&external).unwrap();
+        std::fs::write(external.join("safe.txt"), b"safe").unwrap();
+        junction::create(&external, root.join("sample")).unwrap();
+        let (mut conn, cmd, _) = interrupted_fixture(temp.path());
+        assert_eq!(block_interrupted_fixture(&mut conn, &cmd.command_id, &root).unwrap(), "unsafe_target");
+        assert_eq!(std::fs::read(external.join("safe.txt")).unwrap(), b"safe");
+    }
+
     #[test]
     fn remote_auth_prototype_pairing_revoke_and_claim_serialize() {
         let temp = tempfile::tempdir().unwrap();
