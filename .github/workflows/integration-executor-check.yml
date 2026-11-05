@@ -30,3 +30,5 @@ jobs:
         run: cargo test --manifest-path src-tauri/Cargo.toml --bin skills-manager-cli inventory_run_once_cli -- --test-threads=1
       - name: Test local inventory
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib device_inventory -- --test-threads=1
+
+# Includes both approved-root and dry-run fixture initialization.
