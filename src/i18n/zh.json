@@ -293,9 +293,9 @@
     "manageTitle": "设备管理",
     "refreshFailed": "刷新设备通道失败。",
     "cachedProjectionNotice": "这里显示的是本地保存的设备上报记录，可能未包含设备当前的全部技能。",
-    "channelNotChecked": "当前页面尚未检查通道。",
-    "channelIncomplete": "最近一次刷新发现问题，设备信息可能不完整：",
-    "channelNoWarnings": "最近一次通道刷新未报告问题。",
+    "channelNotChecked": "当前页面尚未成功刷新通道。",
+    "channelIncomplete": "上一次成功刷新发现问题，设备信息可能不完整：",
+    "channelNoWarnings": "上一次成功刷新通道时未报告问题。",
     "currentNoDevices": "本地记录中没有设备。",
     "currentNoSkillRecords": "本地暂无该设备的 Agent 技能记录。",
     "currentNoInstructions": "本地记录中没有部署请求。"
