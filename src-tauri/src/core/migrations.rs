@@ -428,6 +428,7 @@ fn migrate_v10_to_v11(conn: &Connection) -> Result<()> {
             source_id TEXT PRIMARY KEY REFERENCES repository_sources(id) ON DELETE CASCADE,
             head_commit TEXT NOT NULL,
             fetched_at INTEGER NOT NULL,
+            observed_at INTEGER NOT NULL,
             skills_json TEXT NOT NULL
         );
         ",
