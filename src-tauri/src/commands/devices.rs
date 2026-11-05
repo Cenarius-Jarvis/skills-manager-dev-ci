@@ -38,6 +38,8 @@ pub struct DeviceWithStatus {
     /// What this device last *reported*: per-agent deployed skills. This is
     /// the device's word about reality, never a local fact.
     pub skill_records: Vec<devices::DeviceSkillRecordRow>,
+    /// Independently reported central library, not an Agent deployment list.
+    pub library: devices::DeviceLibraryView,
 }
 
 #[derive(Debug, Serialize)]
@@ -95,6 +97,7 @@ fn build_page(store: &SkillStore) -> Result<DevicesPage, AppError> {
         let skill_records = store
             .get_device_skill_records(Some(&row.id))
             .map_err(|e| AppError::db(e))?;
+        let library = devices::library_view(store, &row.id).map_err(|e| AppError::db(e))?;
         devices_out.push(DeviceWithStatus {
             id: row.id,
             name: row.name,
@@ -103,6 +106,7 @@ fn build_page(store: &SkillStore) -> Result<DevicesPage, AppError> {
             last_seen_at: row.last_seen_at,
             online,
             skill_records,
+            library,
         });
     }
     let instructions = store
