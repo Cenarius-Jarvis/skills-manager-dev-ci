@@ -275,6 +275,42 @@ mod tests {
     }
 
     #[test]
+    fn remote_auth_prototype_begin_requires_same_claim_and_current_approval() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut conn = open_fixture(&temp.path().join("commands.db"));
+        let (cmd, trust, signer) = fixture();
+        initialize_pairing(&conn, &cmd, &trust);
+        let signature = signer.sign(&canonical(&cmd).unwrap());
+        paired_claim(&mut conn, &cmd, signature.as_ref(), "dev-fixture", 200).unwrap();
+        let mut altered = cmd.clone();
+        altered.source_hash = "c".repeat(64);
+        let altered_signature = signer.sign(&canonical(&altered).unwrap());
+        assert!(paired_begin(&mut conn, &altered, altered_signature.as_ref(), "dev-fixture", 200).is_err());
+        paired_begin(&mut conn, &cmd, signature.as_ref(), "dev-fixture", 200).unwrap();
+        assert!(paired_begin(&mut conn, &cmd, signature.as_ref(), "dev-fixture", 200).is_err());
+        // Revocation cannot promise to cancel a transition that already started.
+        revoke_fixture_key(&mut conn, &cmd.device_id, &cmd.key_id).unwrap();
+        let state: String = conn.query_row("SELECT state FROM fixture_command_claims WHERE command_id = ?1",
+            params![cmd.command_id], |row| row.get(0)).unwrap();
+        assert_eq!(state, "consuming");
+    }
+
+    #[test]
+    fn remote_auth_prototype_begin_refuses_revocation_after_claim() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut conn = open_fixture(&temp.path().join("commands.db"));
+        let (cmd, trust, signer) = fixture();
+        initialize_pairing(&conn, &cmd, &trust);
+        let signature = signer.sign(&canonical(&cmd).unwrap());
+        paired_claim(&mut conn, &cmd, signature.as_ref(), "dev-fixture", 200).unwrap();
+        revoke_fixture_root(&mut conn, &cmd.device_id, &cmd.agent_key).unwrap();
+        assert!(paired_begin(&mut conn, &cmd, signature.as_ref(), "dev-fixture", 200).is_err());
+        let state: String = conn.query_row("SELECT state FROM fixture_command_claims WHERE command_id = ?1",
+            params![cmd.command_id], |row| row.get(0)).unwrap();
+        assert_eq!(state, "revoked_after_claim");
+    }
+
+    #[test]
     fn remote_auth_prototype_pairing_revoke_and_claim_serialize() {
         let temp = tempfile::tempdir().unwrap();
         let db = temp.path().join("commands.db");
