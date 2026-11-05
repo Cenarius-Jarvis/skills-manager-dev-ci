@@ -725,6 +725,23 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         print_json(&report, cli.json);
         return Ok(());
     }
+    // Reporting reads the existing DB directly; normal CLI initialization
+    // can migrate/reindex it and is not appropriate for a read-only snapshot.
+    if let Commands::Devices(DevicesArgs {
+        command: DevicesCommand::ReportLibrary { url, branch, device_id }
+    }) = &cli.command {
+        if cli.skills_root.is_some() {
+            bail!("devices report-library cannot be combined with --skills-root");
+        }
+        let selected_branch = branch.as_deref().unwrap_or(devices::DEFAULT_CHANNEL_BRANCH);
+        devices::validate_branch_name(selected_branch)?;
+        let report = devices::library_report_from_database(
+            &central_repo::db_path(), device_id, chrono::Utc::now().timestamp()
+        )?;
+        devices::publish_library_report(url, selected_branch, &report)?;
+        print_json(&report, cli.json);
+        return Ok(());
+    }
     // A preview cannot open the regular store: initialization may create or
     // migrate files, and an implicit identity could be persisted. Require an
     // explicit id and enter the read-only executor path before opening it.
@@ -914,13 +931,7 @@ fn run_devices(args: DevicesArgs, store: &SkillStore, json: bool) -> anyhow::Res
             Ok(())
         }
         DevicesCommand::Inventory { .. } => unreachable!("handled before the store is opened"),
-        DevicesCommand::ReportLibrary { url, branch, device_id } => {
-            let report = devices::library_report_from_store(store, &device_id, chrono::Utc::now().timestamp())?;
-            let branch = branch.as_deref().unwrap_or(devices::DEFAULT_CHANNEL_BRANCH);
-            devices::publish_library_report(&url, branch, &report)?;
-            print_json(&report, json);
-            Ok(())
-        }
+        DevicesCommand::ReportLibrary { .. } => unreachable!("handled before the store is opened"),
         DevicesCommand::Whoami => {
             let report = DevicesWhoami {
                 device_id: devices::local_device_id(store)?,
