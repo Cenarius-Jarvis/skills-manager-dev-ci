@@ -1,0 +1,62 @@
+name: Integrate hardened candidate
+on:
+  push:
+    branches: [codex/hardened-integration-prep]
+    paths: ['.github/workflows/hardened-integration-merge.yml']
+permissions:
+  contents: write
+  actions: read
+jobs:
+  integrate:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+      - name: Wait for exact tested revisions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for pair in 41949321819:a0ac7f4ce4f4a4278736e901b6129d334a0f6ec5 41949653127:17869ab5a82555e5f0c5808eea5dadc95882fd3c 41950505474:a6e5ae4d202d40e7c8c8655598b74bf92cf910a0 41950562413:2e00fd407a1d90d9f57b6a356284485cde5da953; do
+            id="${pair%%:*}"
+            expected="${pair#*:}"
+            for attempt in $(seq 1 35); do
+              data="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${id}")"
+              test "$(jq -r .head_sha <<<"$data")" = "$expected"
+              status="$(jq -r .status <<<"$data")"
+              if [ "$status" = completed ]; then
+                test "$(jq -r .conclusion <<<"$data")" = success
+                echo "Run $id passed for expected commit"
+                break
+              fi
+              if [ "$attempt" = 35 ]; then echo "Timed out waiting for run $id"; exit 1; fi
+              sleep 30
+            done
+          done
+      - name: Merge into new candidate only
+        shell: bash
+        run: |
+          set -euo pipefail
+          output_ref=refs/heads/codex/hardened-integration-candidate
+          if git ls-remote --exit-code --heads origin "$output_ref" >/dev/null 2>&1; then
+            echo "Output branch already exists; refusing to alter it"
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for commit in 17869ab5a82555e5f0c5808eea5dadc95882fd3c 2e00fd407a1d90d9f57b6a356284485cde5da953 a6e5ae4d202d40e7c8c8655598b74bf92cf910a0; do
+            git fetch --no-tags origin "$commit"
+            test "$(git rev-parse FETCH_HEAD)" = "$commit"
+            if ! git merge --no-ff --no-edit "$commit"; then
+              git status --short
+              git diff --name-only --diff-filter=U
+              echo "Integration conflict; candidate was not published"
+              exit 1
+            fi
+            git merge-base --is-ancestor "$commit" HEAD
+          done
+          git diff --check a0ac7f4ce4f4a4278736e901b6129d334a0f6ec5 HEAD
+          git push origin "HEAD:$output_ref"
