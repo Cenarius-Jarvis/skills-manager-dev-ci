@@ -26,3 +26,5 @@ jobs:
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib channel_ -- --test-threads=1
       - name: Test combined executor behavior
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib device_executor -- --test-threads=1
+
+# Include a committed malicious symlink in a temporary fake channel.
