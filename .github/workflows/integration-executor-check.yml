@@ -1,0 +1,32 @@
+name: Integrated executor checks
+on:
+  push:
+    branches: [codex/integration-executor-tested]
+    paths: ['.github/workflows/integration-executor-check.yml']
+permissions:
+  contents: read
+jobs:
+  executor:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: src-tauri
+      - name: Install Linux runner dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: Test integrated executor and channel with temporary fixtures
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib device_executor -- --test-threads=1
+      - name: Test CLI dry-run
+        run: cargo test --manifest-path src-tauri/Cargo.toml --bin skills-manager-cli executor_dry_run -- --test-threads=1
+      - name: Test CLI approved roots
+        run: cargo test --manifest-path src-tauri/Cargo.toml --bin skills-manager-cli inventory_run_once_cli -- --test-threads=1
+      - name: Test local inventory
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib device_inventory -- --test-threads=1
