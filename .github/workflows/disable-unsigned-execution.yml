@@ -1,0 +1,32 @@
+name: Block unsigned remote execution
+on:
+  push:
+    branches: [codex/disable-unsigned-execution]
+    paths: ['.github/workflows/disable-unsigned-execution.yml']
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: src-tauri
+      - name: Install Linux runner libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: Test executor guard and legacy behavior in fixtures only
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib device_executor -- --test-threads=1
+      - name: Test CLI blocks unsigned run before store initialization
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --bin skills-manager-cli executor_unsigned_run -- --test-threads=1
+      - name: Test CLI read-only preview remains available
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --bin skills-manager-cli executor_dry_run -- --test-threads=1
+      - name: Check production CLI build
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml --bin skills-manager-cli
