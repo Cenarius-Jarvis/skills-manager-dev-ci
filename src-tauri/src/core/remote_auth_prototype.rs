@@ -148,8 +148,9 @@ mod tests {
     }
 
     /// Fixture only: local pairing lookup, signature and claim share a write transaction.
-    fn paired_claim(conn: &mut Connection, cmd: &CommandV1, signature: &[u8], now: i64) -> Result<()> {
+    fn paired_claim(conn: &mut Connection, cmd: &CommandV1, signature: &[u8], local_device: &str, now: i64) -> Result<()> {
         use rusqlite::OptionalExtension;
+        if cmd.device_id != local_device { bail!("wrong local device"); }
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let key: Option<Vec<u8>> = tx.query_row(
             "SELECT public_key FROM fixture_trusted_keys WHERE device_id = ?1 AND key_id = ?2 AND state = 'active'",
@@ -161,7 +162,7 @@ mod tests {
             params![cmd.device_id, cmd.agent_key], |row| row.get(0)).optional()?;
         if fingerprint.as_deref() != Some(cmd.root_fingerprint.as_str()) { bail!("root not authorized"); }
         let trust = TrustedKey { key_id: cmd.key_id.clone(), device_id: cmd.device_id.clone(), public_key };
-        let hash = validate_signed_command(cmd, signature, &trust, &cmd.device_id, now)?;
+        let hash = validate_signed_command(cmd, signature, &trust, local_device, now)?;
         insert_claim(&tx, cmd, &hash)?;
         tx.commit()?;
         Ok(())
@@ -188,10 +189,11 @@ mod tests {
         let mut changed = cmd.clone();
         changed.root_fingerprint = "c".repeat(64);
         let changed_signature = signer.sign(&canonical(&changed).unwrap());
-        assert!(paired_claim(&mut conn, &changed, changed_signature.as_ref(), 200).is_err());
-        assert!(paired_claim(&mut conn, &cmd, &[], 200).is_err());
-        paired_claim(&mut conn, &cmd, signature.as_ref(), 200).unwrap();
-        assert!(paired_claim(&mut conn, &cmd, signature.as_ref(), 200).is_err());
+        assert!(paired_claim(&mut conn, &changed, changed_signature.as_ref(), "dev-fixture", 200).is_err());
+        assert!(paired_claim(&mut conn, &cmd, &[], "dev-fixture", 200).is_err());
+        assert!(paired_claim(&mut conn, &cmd, signature.as_ref(), "different-local-device", 200).is_err());
+        paired_claim(&mut conn, &cmd, signature.as_ref(), "dev-fixture", 200).unwrap();
+        assert!(paired_claim(&mut conn, &cmd, signature.as_ref(), "dev-fixture", 200).is_err());
         revoke_fixture_key(&mut conn, &cmd.device_id, &cmd.key_id).unwrap();
         let state: String = conn.query_row("SELECT state FROM fixture_command_claims WHERE command_id = ?1",
             params![cmd.command_id], |row| row.get(0)).unwrap();
@@ -199,7 +201,7 @@ mod tests {
         let mut new_cmd = cmd.clone();
         new_cmd.command_id = uuid::Uuid::new_v4().to_string();
         let new_signature = signer.sign(&canonical(&new_cmd).unwrap());
-        assert!(paired_claim(&mut conn, &new_cmd, new_signature.as_ref(), 200).is_err());
+        assert!(paired_claim(&mut conn, &new_cmd, new_signature.as_ref(), "dev-fixture", 200).is_err());
     }
 
     #[test]
@@ -218,7 +220,7 @@ mod tests {
         let claim = std::thread::spawn(move || {
             let mut conn = open_fixture(&db_a);
             gate_a.wait();
-            paired_claim(&mut conn, &cmd_a, &signature, 200).is_ok()
+            paired_claim(&mut conn, &cmd_a, &signature, "dev-fixture", 200).is_ok()
         });
         let db_b = db.clone();
         let cmd_b = cmd.clone();
