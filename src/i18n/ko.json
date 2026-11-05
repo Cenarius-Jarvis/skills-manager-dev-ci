@@ -290,7 +290,15 @@
     "agentKeyLabel": "대상 에이전트",
     "createInstruction": "보내기",
     "instructionCreated": "배포 요청이 게시되었습니다",
-    "manageTitle": "기기(관리)"
+    "manageTitle": "기기(관리)",
+    "refreshFailed": "기기 채널을 새로고침하지 못했습니다.",
+    "cachedProjectionNotice": "기기가 보고한 로컬 기록을 표시합니다. 기기에 현재 있는 모든 스킬이 포함되지 않을 수 있습니다.",
+    "channelNotChecked": "이 화면에서는 아직 채널을 확인하지 않았습니다.",
+    "channelIncomplete": "마지막 새로고침에서 문제가 발견되어 기기 정보가 불완전할 수 있습니다.",
+    "channelNoWarnings": "마지막 채널 새로고침에서 보고된 문제가 없습니다.",
+    "currentNoDevices": "로컬 기록에 기기가 없습니다.",
+    "currentNoSkillRecords": "이 기기에 대한 에이전트 스킬 기록이 없습니다.",
+    "currentNoInstructions": "로컬 기록에 배포 요청이 없습니다."
   },
   "firstRun": {
     "title": "새로 시작할까요, 백업에서 복원할까요?",
