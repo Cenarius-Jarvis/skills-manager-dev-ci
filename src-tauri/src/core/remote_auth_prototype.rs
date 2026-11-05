@@ -540,7 +540,12 @@ mod tests {
         cmd.skill_id = "fixture-skill".into();
         cmd.source_hash = hash.clone();
         let approved = std::fs::canonicalize(&agent).unwrap();
-        cmd.root_fingerprint = hex::encode(Sha256::digest(approved.to_string_lossy().as_bytes()));
+        // This local fingerprint is a test placeholder, not a Windows path-identity solution.
+        let local_approval = LocalFixtureApproval {
+            device_id: "dev-fixture".into(), agent_key: "codex".into(),
+            root_fingerprint: hex::encode(Sha256::digest(approved.to_string_lossy().as_bytes())),
+        };
+        cmd.root_fingerprint = local_approval.root_fingerprint.clone();
         let signature = signer.sign(&canonical(&cmd).unwrap());
 
         // The native fixture must refuse bytes that changed after signing.
@@ -550,14 +555,14 @@ mod tests {
         std::fs::write(source.join("SKILL.md"), "# fake fixture").unwrap();
 
         let mut conn = open_fixture(&temp.path().join("claims.db"));
-        // Real integration must obtain this mapping from an approved local store.
-        assert_eq!(cmd.root_fingerprint, hex::encode(Sha256::digest(approved.to_string_lossy().as_bytes())));
+        initialize_pairing(&mut conn, &trust, &local_approval).unwrap();
         assert_eq!(cmd.source_hash, store.get_skill_by_id(&cmd.skill_id).unwrap().unwrap().content_hash.unwrap());
-        verify_and_claim(&mut conn, &cmd, signature.as_ref(), &trust, "dev-fixture", 200).unwrap();
+        paired_claim(&mut conn, &cmd, signature.as_ref(), "dev-fixture", 200).unwrap();
+        paired_begin(&mut conn, &cmd, signature.as_ref(), "dev-fixture", 200).unwrap();
         let target = native_managed_executor::deploy_new_slot(&store, &cmd.skill_id, &cmd.agent_key, &approved).unwrap();
         assert_eq!(std::fs::read_to_string(target.join("SKILL.md")).unwrap(), "# fake fixture");
         assert_eq!(store.get_targets_for_skill(&cmd.skill_id).unwrap().len(), 1);
-        assert!(verify_and_claim(&mut conn, &cmd, signature.as_ref(), &trust, "dev-fixture", 200).is_err());
+        assert!(paired_claim(&mut conn, &cmd, signature.as_ref(), "dev-fixture", 200).is_err());
         assert_eq!(store.get_targets_for_skill(&cmd.skill_id).unwrap().len(), 1);
     }
 
