@@ -1,7 +1,7 @@
-name: Verified device message integration
+name: Device claim revalidation
 on:
   push:
-    branches: [codex/bind-verified-payload]
+    branches: [codex/revalidate-device-claims]
     paths: ['.github/workflows/safe-integration-check.yml']
 permissions:
   contents: read
