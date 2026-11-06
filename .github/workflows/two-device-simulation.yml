@@ -1,7 +1,7 @@
-name: Pinned-skill update simulation
+name: Two-device crash simulation
 on:
   push:
-    branches: [codex/pinned-skill-update-fixture]
+    branches: [codex/two-device-crash-simulation]
     paths: ['.github/workflows/two-device-simulation.yml']
 permissions:
   contents: read
@@ -22,7 +22,7 @@ jobs:
       - name: Install Linux runner dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-      - name: Verify pinned installation, update, and signed round trip
+      - name: Verify signed round trip, updates, and abrupt process termination
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib two_device_simulation -- --test-threads=1
       - name: Verify isolated native deployment protections
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib native_deploy -- --test-threads=1
