@@ -1,13 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::sync::Arc;
+use std::path::Path;
 use app_lib::core::{repository_sources as repos, skill_store::SkillStore};
 use tauri::State;
 
 struct PreviewResources {
     store: SkillStore,
-    // Dropped after the store so SQLite handles are closed before cleanup.
-    _temporary_directory: tempfile::TempDir,
 }
 
 struct Preview {
@@ -46,13 +45,20 @@ async fn repository_sources_refresh(state: State<'_, Preview>, id: String) -> Re
         .await.map_err(|_| "repository refresh task failed".to_string())?
 }
 
+fn open_preview_store_at(directory: &Path) -> anyhow::Result<SkillStore> {
+    std::fs::create_dir_all(directory)?;
+    SkillStore::new(&directory.join("preview.db"))
+}
+
 fn main() {
-    let temp = tempfile::Builder::new().prefix("skills-repo-preview-").tempdir()
-        .expect("failed to create temporary preview directory");
-    let store = SkillStore::new(&temp.path().join("preview.db"))
-        .expect("failed to initialize temporary preview store");
+    let data_dir = dirs::data_local_dir()
+        .expect("cannot find local application data directory")
+        .join("dev.skillsmanager.repositoryreadonlypreview")
+        .join("preview-store");
+    let store = open_preview_store_at(&data_dir)
+        .expect("failed to initialize isolated preview store");
     tauri::Builder::default()
-        .manage(Preview { resources: Arc::new(PreviewResources { store, _temporary_directory: temp }) })
+        .manage(Preview { resources: Arc::new(PreviewResources { store }) })
         .invoke_handler(tauri::generate_handler![
             repository_sources_list, repository_sources_add, repository_sources_remove,
             repository_sources_snapshot, repository_sources_refresh
@@ -76,15 +82,27 @@ mod tests {
     }
 
     #[test]
-    fn preview_store_lives_as_long_as_background_refresh() {
+    fn preview_sources_and_last_snapshot_survive_reopen() {
         let temp = tempfile::tempdir().unwrap();
-        let temp_path = temp.path().to_path_buf();
-        let store = SkillStore::new(&temp_path.join("preview.db")).unwrap();
-        let application = Arc::new(PreviewResources { store, _temporary_directory: temp });
-        let refresh = Arc::clone(&application);
-        drop(application);
-        assert!(temp_path.exists(), "background task must retain the database");
-        drop(refresh);
-        assert!(!temp_path.exists(), "temporary database should be removed after the final owner exits");
+        let directory = temp.path().join("isolated-preview");
+        let store = open_preview_store_at(&directory).unwrap();
+        let source = repos::add_source(&store, "test-device", None,
+            "https://example.invalid/user/repo.git", "main", "").unwrap();
+        let sequence = store.reserve_repository_refresh(&source.id).unwrap();
+        let snapshot = repos::RepositorySnapshot {
+            source_id: source.id.clone(),
+            head_commit: "test-commit".into(),
+            fetched_at: 1,
+            observed_at: sequence,
+            skills: vec![repos::RepositorySkill { name: "demo".into(), relative_path: "demo".into() }],
+        };
+        store.save_repository_snapshot(&snapshot).unwrap();
+        drop(store);
+        let reopened = open_preview_store_at(&directory).unwrap();
+        assert_eq!(reopened.list_repository_sources().unwrap().len(), 1);
+        let restored = reopened.get_repository_snapshot(&source.id).unwrap().unwrap();
+        assert_eq!(restored.head_commit, "test-commit");
+        assert_eq!(restored.skills[0].name, "demo");
+        assert!(!temp.path().join(".skills-manager").exists());
     }
 }
