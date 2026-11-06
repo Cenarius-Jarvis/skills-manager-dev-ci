@@ -11,7 +11,7 @@ use std::path::Path;
 use super::{
     central_repo, content_hash,
     device_envelope::{self, DeviceEnvelope, MessageKind},
-    device_pairing, native_managed_executor,
+    device_pairing, installer, native_managed_executor,
     skill_store::{SkillRecord, SkillStore},
 };
 
@@ -198,3 +198,136 @@ fn two_device_simulation_signed_git_round_trip() -> Result<()> { scenario(false)
 
 #[test]
 fn two_device_simulation_offline_receipt_preserves_uncertainty() -> Result<()> { scenario(true) }
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PinnedInstallCommand {
+    skill_id: String,
+    agent: String,
+    source_commit: String,
+    source_hash: String,
+}
+
+// Fixture-only preflight. Production installation still needs stronger
+// no-clobber, link/race, provenance, metadata and crash-recovery protections.
+fn checked_fixture_source(repo: &Repository, command: &PinnedInstallCommand) -> Result<std::path::PathBuf> {
+    let actual = repo.head()?.peel_to_commit()?.id().to_string();
+    if actual != command.source_commit { bail!("fixture source commit differs from signed command"); }
+    let source = repo.workdir().ok_or_else(|| anyhow::anyhow!("fixture worktree missing"))?.join("sample");
+    if content_hash::hash_directory(&source)? != command.source_hash {
+        bail!("fixture source content differs from signed command");
+    }
+    Ok(source)
+}
+
+#[test]
+fn two_device_simulation_installs_pinned_skill_and_reports_receipt() -> Result<()> {
+    let _guard = central_repo::test_base_dir_lock();
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path();
+
+    // A separate synthetic skill repository has a single committed skill.
+    let source_remote_path = root.join("skill-source.git");
+    let source_remote = Repository::init_bare(&source_remote_path)?;
+    let source_author = Repository::init(root.join("skill-author"))?;
+    let source_skill = source_author.workdir().unwrap().join("sample");
+    std::fs::create_dir_all(&source_skill)?;
+    std::fs::write(source_skill.join("SKILL.md"), b"# fixture install")?;
+    let expected_hash = content_hash::hash_directory(&source_skill)?;
+    commit_all(&source_author, "fixture skill v1")?;
+    let expected_commit = source_author.head()?.peel_to_commit()?.id().to_string();
+    push(&source_author, &source_remote_path)?;
+    source_remote.set_head("refs/heads/main")?;
+
+    let channel_path = root.join("channel.git");
+    let channel = Repository::init_bare(&channel_path)?;
+    let controller = Repository::init(root.join("controller"))?;
+    let controller_key = keypair();
+    let device_key = keypair();
+    let command = PinnedInstallCommand {
+        skill_id: "fixture-new-skill".into(), agent: "codex".into(),
+        source_commit: expected_commit, source_hash: expected_hash,
+    };
+    let request = signed(&controller_key, MessageKind::Command, "controller-key",
+        "install-1", serde_json::to_vec(&command)?);
+    write_wire(&controller, "command.json", &request)?;
+    commit_all(&controller, "fixture install request")?;
+    push(&controller, &channel_path)?;
+    channel.set_head("refs/heads/main")?;
+
+    let device = Repository::clone(channel_path.to_str().unwrap(), root.join("device-work"))?;
+    let received = read_wire(&device, "command.json")?;
+    let mut device_trust = Connection::open(root.join("device-trust.db"))?;
+    device_pairing::initialize_trust_store(&device_trust)?;
+    device_pairing::register_approved_key(&device_trust, "fixture-device", "controller-key",
+        MessageKind::Command, controller_key.public_key().as_ref())?;
+    let claim = device_pairing::verify_and_claim_paired(&mut device_trust, &received.envelope,
+        &received.signature, &received.payload, "fixture-device", MessageKind::Command, 1050)?
+        .ok_or_else(|| anyhow::anyhow!("unexpected fixture replay"))?;
+    let prepared = device_pairing::prepare_claimed_command(&mut device_trust, claim, 1051)?;
+    let action: PinnedInstallCommand = serde_json::from_slice(prepared.payload())?;
+    if action.skill_id != "fixture-new-skill" || action.agent != "codex" {
+        bail!("fixture target not locally approved");
+    }
+
+    let fetched = Repository::clone(source_remote_path.to_str().unwrap(), root.join("source-work"))?;
+    // Refuse a modified checkout and a wrong immutable commit before installing.
+    let fetched_skill = fetched.workdir().unwrap().join("sample");
+    std::fs::write(fetched_skill.join("SKILL.md"), b"tampered")?;
+    assert!(checked_fixture_source(&fetched, &action).is_err());
+    std::fs::write(fetched_skill.join("SKILL.md"), b"# fixture install")?;
+    let mut wrong_commit = action.source_commit.clone();
+    wrong_commit.replace_range(0..1, if wrong_commit.starts_with('0') { "1" } else { "0" });
+    let wrong = PinnedInstallCommand { skill_id: action.skill_id.clone(), agent: action.agent.clone(),
+        source_commit: wrong_commit, source_hash: action.source_hash.clone() };
+    assert!(checked_fixture_source(&fetched, &wrong).is_err());
+    let checked_source = checked_fixture_source(&fetched, &action)?;
+
+    let device_base = root.join("fake-device-manager");
+    let agent_root = root.join("fake-agent");
+    std::fs::create_dir_all(device_base.join("skills"))?;
+    std::fs::create_dir_all(&agent_root)?;
+    central_repo::set_test_base_dir_override(Some(device_base.clone()));
+    let _reset = ResetBase;
+    let store = SkillStore::new(&device_base.join("skills-manager.db"))?;
+    let destination = device_base.join("skills").join("sample");
+    assert!(!destination.exists());
+    let installed = installer::install_from_local_to_destination(&checked_source, Some("sample"), &destination)?;
+    assert_eq!(installed.content_hash, action.source_hash);
+    store.insert_skill(&SkillRecord {
+        id: action.skill_id.clone(), name: installed.name, description: installed.description,
+        source_type: "git".into(), source_ref: Some("https://example.invalid/fixture.git".into()),
+        source_ref_resolved: None, source_subpath: Some("sample".into()), source_branch: None,
+        source_revision: Some(action.source_commit), remote_revision: None,
+        central_path: installed.central_path.to_string_lossy().into_owned(),
+        content_hash: Some(installed.content_hash), enabled: true, created_at: 1, updated_at: 1,
+        status: "ok".into(), update_status: "up_to_date".into(), last_checked_at: None,
+        last_check_error: None,
+    })?;
+    let target = native_managed_executor::deploy_new_slot(&store, &action.skill_id, &action.agent, &agent_root)?;
+    assert_eq!(std::fs::read(target.join("SKILL.md"))?, b"# fixture install");
+    assert_eq!(store.get_targets_for_skill("fixture-new-skill")?.len(), 1);
+    assert!(device_pairing::verify_and_claim_paired(&mut device_trust, &received.envelope,
+        &received.signature, &received.payload, "fixture-device", MessageKind::Command, 1052)?.is_none());
+
+    let receipt = signed(&device_key, MessageKind::Receipt, "device-key", "receipt-install-1",
+        serde_json::to_vec(&FixtureReceipt { message_id: "install-1".into(),
+            skill_id: action.skill_id, result: "success".into() })?);
+    write_wire(&device, "receipt.json", &receipt)?;
+    commit_all(&device, "fixture install receipt")?;
+    push(&device, &channel_path)?;
+    let observer = Repository::clone(channel_path.to_str().unwrap(), root.join("observer"))?;
+    let received_receipt = read_wire(&observer, "receipt.json")?;
+    let mut controller_trust = Connection::open(root.join("controller-trust.db"))?;
+    device_pairing::initialize_trust_store(&controller_trust)?;
+    device_pairing::register_approved_key(&controller_trust, "fixture-device", "device-key",
+        MessageKind::Receipt, device_key.public_key().as_ref())?;
+    let verified = device_pairing::verify_and_claim_paired(&mut controller_trust,
+        &received_receipt.envelope, &received_receipt.signature, &received_receipt.payload,
+        "fixture-device", MessageKind::Receipt, 1053)?
+        .ok_or_else(|| anyhow::anyhow!("unexpected receipt replay"))?;
+    let receipt: FixtureReceipt = serde_json::from_slice(verified.payload())?;
+    assert_eq!(receipt.message_id, "install-1");
+    assert_eq!(receipt.result, "success");
+    Ok(())
+}
