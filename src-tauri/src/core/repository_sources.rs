@@ -102,7 +102,7 @@ pub fn add_source(store: &SkillStore, name: &str, device_id: Option<String>, url
 
 fn clone_bare(url: &str, branch: &str, path: &Path) -> Result<()> {
     let mut cmd = git_command();
-    cmd.args(["clone", "--quiet", "--bare", "--single-branch", "--branch", branch, "--"])
+    cmd.args(["clone", "--quiet", "--bare", "--single-branch", "--depth", "1", "--branch", branch, "--"])
         .arg(url).arg(path)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes -o ConnectTimeout=15")
@@ -259,6 +259,22 @@ mod tests {
         let commit = repo.commit(Some("refs/heads/main"), &sig, &sig, "fixture", &tree, &parents)?;
         repo.set_head("refs/heads/main")?;
         Ok(commit.to_string())
+    }
+
+    #[test]
+    fn clone_fetches_only_latest_commit_over_transport() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let remote = temp.path().join("remote.git");
+        write_fake_repository(&remote, &["old"], false)?;
+        let head = write_fake_repository(&remote, &["latest"], false)?;
+        let url = reqwest::Url::from_directory_path(&remote)
+            .map_err(|_| anyhow::anyhow!("fixture path is not a file URL"))?;
+        let dest = temp.path().join("clone.git");
+        clone_bare(url.as_str(), "main", &dest)?;
+        let cloned = git2::Repository::open_bare(dest)?;
+        assert!(cloned.is_shallow());
+        assert_eq!(cloned.head()?.peel_to_commit()?.id().to_string(), head);
+        Ok(())
     }
 
     #[test]
