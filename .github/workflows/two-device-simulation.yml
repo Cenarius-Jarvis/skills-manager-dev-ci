@@ -1,7 +1,7 @@
-name: Durable signed inbox validation
+name: Signed inbox recovery inventory validation
 on:
   push:
-    branches: [codex/durable-verified-inbox]
+    branches: [codex/inbox-recovery-inventory]
     paths: ['.github/workflows/two-device-simulation.yml']
 permissions:
   contents: read
