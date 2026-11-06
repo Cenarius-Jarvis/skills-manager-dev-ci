@@ -247,4 +247,56 @@ mod tests {
         assert_eq!(count, 0);
     }
 
+    fn claimed_command_fixture() -> (Connection, ClaimedDeviceMessage) {
+        let mut conn = Connection::open_in_memory().unwrap();
+        initialize_trust_store(&conn).unwrap();
+        let (key, mut env, payload, _) = fixture();
+        env.kind = MessageKind::Command;
+        let sig = key.sign(&device_envelope::signing_bytes(&env).unwrap()).as_ref().to_vec();
+        register_approved_key(&conn, "device-1", "key-1", MessageKind::Command,
+            key.public_key().as_ref()).unwrap();
+        let claimed = verify_and_claim_paired(&mut conn, &env, &sig, &payload,
+            "device-1", MessageKind::Command, 1050).unwrap().unwrap();
+        (conn, claimed)
+    }
+
+    #[test]
+    fn device_pairing_preparation_requires_current_trust_and_time() {
+        let (mut conn, claimed) = claimed_command_fixture();
+        assert!(revoke_key(&conn, "device-1", "key-1", MessageKind::Command).unwrap());
+        assert!(prepare_claimed_command(&mut conn, claimed, 1051).is_err());
+
+        let (mut conn, claimed) = claimed_command_fixture();
+        assert!(prepare_claimed_command(&mut conn, claimed, 1100).is_err());
+    }
+
+    #[test]
+    fn device_pairing_preparation_consumes_the_exact_claim_once() {
+        let (mut conn, claimed) = claimed_command_fixture();
+        let duplicate = ClaimedDeviceMessage {
+            envelope: claimed.envelope().clone(), payload: claimed.payload().to_vec(),
+        };
+        let prepared = prepare_claimed_command(&mut conn, claimed, 1051).unwrap();
+        assert_eq!(prepared.payload(), b"fixture");
+        assert_eq!(prepared.envelope().message_id, "msg-1");
+        assert!(prepare_claimed_command(&mut conn, duplicate, 1051).is_err());
+    }
+
+    #[test]
+    fn device_pairing_preparation_refuses_a_different_ledger_and_report() {
+        let (_, claimed) = claimed_command_fixture();
+        let mut other = Connection::open_in_memory().unwrap();
+        initialize_trust_store(&other).unwrap();
+        assert!(prepare_claimed_command(&mut other, claimed, 1051).is_err());
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        initialize_trust_store(&conn).unwrap();
+        let (key, env, payload, sig) = fixture();
+        register_approved_key(&conn, "device-1", "key-1", MessageKind::LibraryReport,
+            key.public_key().as_ref()).unwrap();
+        let report = verify_and_claim_paired(&mut conn, &env, &sig, &payload,
+            "device-1", MessageKind::LibraryReport, 1050).unwrap().unwrap();
+        assert!(prepare_claimed_command(&mut conn, report, 1051).is_err());
+    }
+
 }
