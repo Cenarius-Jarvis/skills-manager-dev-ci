@@ -1,7 +1,7 @@
-name: Two-device isolated simulation
+name: Pinned-skill installation simulation
 on:
   push:
-    branches: [codex/two-device-simulation]
+    branches: [codex/pinned-skill-install-fixture]
     paths: ['.github/workflows/two-device-simulation.yml']
 permissions:
   contents: read
@@ -22,7 +22,7 @@ jobs:
       - name: Install Linux runner dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-      - name: Verify two-device signed round trip and offline receipt
+      - name: Verify signed round trip, pinned installation, and offline receipt
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib two_device_simulation -- --test-threads=1
       - name: Verify isolated native deployment protections
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib native_deploy -- --test-threads=1
