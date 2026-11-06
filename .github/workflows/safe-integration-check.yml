@@ -1,7 +1,7 @@
-name: Device report and snapshot integration
+name: Signed device envelope checks
 on:
   push:
-    branches: [codex/honest-device-report-status]
+    branches: [codex/signed-device-envelope]
     paths: ['.github/workflows/safe-integration-check.yml']
 permissions:
   contents: read
@@ -36,6 +36,8 @@ jobs:
       - name: Install Linux runner dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: Test signed message validation
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib device_envelope -- --test-threads=1
       - name: Test central library snapshots and privacy
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib device_library_report -- --test-threads=1
       - name: Test channel isolation and network failures
