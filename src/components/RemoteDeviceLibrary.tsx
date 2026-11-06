@@ -64,6 +64,7 @@ export function RemoteDeviceLibrary({
       <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-[13px] text-amber-700 dark:text-amber-300"
         role={snapshotWarnings?.length ? "alert" : "status"} data-testid="remote-snapshot-notice">
         <p>{t("devices.cachedProjectionNotice")}</p>
+        <p className="mt-1" data-testid="remote-report-authenticity">{t("devices.reportUnauthenticated")}</p>
         {snapshotWarnings == null ? <p className="mt-1">{t("devices.channelNotChecked")}</p> :
           snapshotWarnings.length > 0 ? <>
             <p className="mt-1 font-medium">{t("devices.channelIncomplete")}</p>
