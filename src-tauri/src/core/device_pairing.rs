@@ -139,7 +139,9 @@ pub fn resume_unprepared_claim(
          JOIN device_trusted_keys_v1 k ON k.device_id = b.device_id
              AND k.key_id = b.key_id AND k.purpose = b.purpose
          WHERE i.device_id = ?1 AND i.message_id = ?2 AND b.purpose = ?3
-               AND b.prepared = 0 AND k.active = 1",
+               AND b.prepared = 0 AND k.active = 1
+               AND length(i.envelope) <= 8192 AND length(i.signature) = 64
+               AND length(i.payload) <= 1048576 AND length(k.public_key) = 32",
         params![expected_device, message_id, purpose(expected_kind)],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?,
                    row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?)),
@@ -345,6 +347,72 @@ mod tests {
         let report = verify_and_claim_paired(&mut conn, &env, &sig, &payload,
             "device-1", MessageKind::LibraryReport, 1050).unwrap().unwrap();
         assert!(prepare_claimed_command(&mut conn, report, 1051).is_err());
+    }
+
+    #[test]
+    fn device_pairing_pending_inbox_survives_restart_and_prepares_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("inbox.db");
+        let mut conn = Connection::open(&path).unwrap();
+        initialize_trust_store(&conn).unwrap();
+        let (key, mut env, payload, _) = fixture();
+        env.kind = MessageKind::Command;
+        let sig = key.sign(&device_envelope::signing_bytes(&env).unwrap()).as_ref().to_vec();
+        register_approved_key(&conn, "device-1", "key-1", MessageKind::Command,
+            key.public_key().as_ref()).unwrap();
+        assert!(verify_and_claim_paired(&mut conn, &env, &sig, &payload,
+            "device-1", MessageKind::Command, 1050).unwrap().is_some());
+        drop(conn);
+        let mut conn = Connection::open(&path).unwrap();
+        assert!(verify_and_claim_paired(&mut conn, &env, &sig, &payload,
+            "device-1", MessageKind::Command, 1051).unwrap().is_none());
+        let first = resume_unprepared_claim(&mut conn, "device-1", "msg-1",
+            MessageKind::Command, 1051).unwrap().unwrap();
+        let second = resume_unprepared_claim(&mut conn, "device-1", "msg-1",
+            MessageKind::Command, 1051).unwrap().unwrap();
+        assert_eq!(first.payload(), payload.as_slice());
+        prepare_claimed_command(&mut conn, first, 1051).unwrap();
+        assert!(prepare_claimed_command(&mut conn, second, 1051).is_err());
+        drop(conn);
+        let mut conn = Connection::open(&path).unwrap();
+        assert!(resume_unprepared_claim(&mut conn, "device-1", "msg-1",
+            MessageKind::Command, 1052).unwrap().is_none());
+    }
+
+    #[test]
+    fn device_pairing_pending_inbox_rechecks_trust_expiry_and_content() {
+        let (mut conn, _) = claimed_command_fixture();
+        assert!(resume_unprepared_claim(&mut conn, "other", "msg-1",
+            MessageKind::Command, 1051).unwrap().is_none());
+        assert!(resume_unprepared_claim(&mut conn, "device-1", "msg-1",
+            MessageKind::LibraryReport, 1051).unwrap().is_none());
+        assert!(resume_unprepared_claim(&mut conn, "device-1", "msg-1",
+            MessageKind::Command, 1100).is_err());
+        conn.execute("UPDATE verified_message_inbox_v1 SET payload = ?1",
+            params![b"tampered".as_slice()]).unwrap();
+        assert!(resume_unprepared_claim(&mut conn, "device-1", "msg-1",
+            MessageKind::Command, 1051).is_err());
+
+        let (mut conn, _) = claimed_command_fixture();
+        assert!(revoke_key(&conn, "device-1", "key-1", MessageKind::Command).unwrap());
+        assert!(resume_unprepared_claim(&mut conn, "device-1", "msg-1",
+            MessageKind::Command, 1051).unwrap().is_none());
+    }
+
+    #[test]
+    fn device_pairing_inbox_failure_rolls_back_replay_claim() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        initialize_trust_store(&conn).unwrap();
+        let (key, env, payload, sig) = fixture();
+        register_approved_key(&conn, "device-1", "key-1", MessageKind::LibraryReport,
+            key.public_key().as_ref()).unwrap();
+        conn.execute_batch("CREATE TRIGGER fail_inbox BEFORE INSERT ON verified_message_inbox_v1
+            BEGIN SELECT RAISE(FAIL, 'fixture failure'); END;").unwrap();
+        assert!(verify_and_claim_paired(&mut conn, &env, &sig, &payload,
+            "device-1", MessageKind::LibraryReport, 1050).is_err());
+        conn.execute_batch("DROP TRIGGER fail_inbox;").unwrap();
+        assert!(verify_and_claim_paired(&mut conn, &env, &sig, &payload,
+            "device-1", MessageKind::LibraryReport, 1050).unwrap().is_some());
     }
 
 }
