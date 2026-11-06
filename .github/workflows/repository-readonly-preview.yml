@@ -1,4 +1,4 @@
-name: Verify persistent preview and concurrent startup
+name: Verify fixed persistent preview
 on:
   push:
     branches: [codex/persistent-repository-preview]
