@@ -1,0 +1,142 @@
+//! Local device trust ledger. It is not yet connected to remote execution.
+//! Callers must obtain explicit local approval before registering a key.
+use anyhow::{bail, Context, Result};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use super::device_envelope::{self, DeviceEnvelope, MessageKind};
+
+fn valid_id(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 128
+        && value.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+}
+
+fn purpose(kind: MessageKind) -> &'static str {
+    match kind {
+        MessageKind::Command => "command",
+        MessageKind::Receipt => "receipt",
+        MessageKind::LibraryReport => "library_report",
+    }
+}
+
+/// Create local trust and replay tables in the caller's chosen database.
+pub fn initialize_trust_store(conn: &Connection) -> Result<()> {
+    device_envelope::initialize_claim_store(conn)?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS device_trusted_keys_v1 (
+            device_id TEXT NOT NULL,
+            key_id TEXT NOT NULL,
+            purpose TEXT NOT NULL,
+            public_key BLOB NOT NULL CHECK(length(public_key) = 32),
+            active INTEGER NOT NULL CHECK(active IN (0, 1)),
+            PRIMARY KEY(device_id, key_id, purpose)
+        );",
+    )?;
+    Ok(())
+}
+
+/// Register a public key only after explicit local pairing approval.
+/// Existing keys are never silently replaced or reactivated.
+pub fn register_approved_key(
+    conn: &Connection, device_id: &str, key_id: &str,
+    kind: MessageKind, public_key: &[u8],
+) -> Result<()> {
+    if !valid_id(device_id) || !valid_id(key_id) || public_key.len() != 32 {
+        bail!("invalid local pairing");
+    }
+    conn.execute(
+        "INSERT INTO device_trusted_keys_v1 (device_id, key_id, purpose, public_key, active)
+         VALUES (?1, ?2, ?3, ?4, 1)",
+        params![device_id, key_id, purpose(kind), public_key],
+    )?;
+    Ok(())
+}
+
+pub fn revoke_key(conn: &Connection, device_id: &str, key_id: &str, kind: MessageKind) -> Result<bool> {
+    Ok(conn.execute(
+        "UPDATE device_trusted_keys_v1 SET active = 0
+         WHERE device_id = ?1 AND key_id = ?2 AND purpose = ?3 AND active = 1",
+        params![device_id, key_id, purpose(kind)],
+    )? == 1)
+}
+
+/// Atomically check locally paired identity and claim the message ID. The
+/// caller must perform a fresh authorization check before any side effect;
+/// revocation after this transaction is not an execution authorization.
+pub fn verify_and_claim_paired(
+    conn: &mut Connection, envelope: &DeviceEnvelope, signature: &[u8], payload: &[u8],
+    expected_device: &str, expected_kind: MessageKind, now: i64,
+) -> Result<bool> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let public_key: Option<Vec<u8>> = tx.query_row(
+        "SELECT public_key FROM device_trusted_keys_v1
+         WHERE device_id = ?1 AND key_id = ?2 AND purpose = ?3 AND active = 1",
+        params![expected_device, envelope.key_id, purpose(expected_kind)],
+        |row| row.get(0),
+    ).optional()?;
+    let public_key = public_key.context("device key is not locally paired or has been revoked")?;
+    let verified = device_envelope::verify_envelope(envelope, signature, payload, &public_key,
+        expected_device, &envelope.key_id, expected_kind, now)?;
+    let accepted = device_envelope::claim_verified_once(&tx, &verified, now)?;
+    tx.commit()?;
+    Ok(accepted)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ring::{rand::SystemRandom, signature::{Ed25519KeyPair, KeyPair}};
+    use sha2::{Digest, Sha256};
+
+    fn fixture() -> (Ed25519KeyPair, DeviceEnvelope, Vec<u8>, Vec<u8>) {
+        let bytes = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
+        let key = Ed25519KeyPair::from_pkcs8(bytes.as_ref()).unwrap();
+        let payload = b"fixture".to_vec();
+        let env = DeviceEnvelope {
+            version: 1, kind: MessageKind::LibraryReport,
+            message_id: "msg-1".into(), device_id: "device-1".into(), key_id: "key-1".into(),
+            issued_at: 1000, expires_at: 1100, payload_sha256: hex::encode(Sha256::digest(&payload)),
+        };
+        let sig = key.sign(&device_envelope::signing_bytes(&env).unwrap()).as_ref().to_vec();
+        (key, env, payload, sig)
+    }
+
+    #[test]
+    fn device_pairing_accepts_only_locally_approved_key_and_once() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        initialize_trust_store(&conn).unwrap();
+        let (key, env, payload, sig) = fixture();
+        assert!(verify_and_claim_paired(&mut conn, &env, &sig, &payload,
+            "device-1", MessageKind::LibraryReport, 1050).is_err());
+        register_approved_key(&conn, "device-1", "key-1", MessageKind::LibraryReport,
+            key.public_key().as_ref()).unwrap();
+        assert!(register_approved_key(&conn, "device-1", "key-1", MessageKind::LibraryReport,
+            key.public_key().as_ref()).is_err());
+        assert!(verify_and_claim_paired(&mut conn, &env, &sig, &payload,
+            "other-device", MessageKind::LibraryReport, 1050).is_err());
+        assert!(verify_and_claim_paired(&mut conn, &env, &sig, &payload,
+            "device-1", MessageKind::Command, 1050).is_err());
+        assert!(verify_and_claim_paired(&mut conn, &env, &sig, b"changed",
+            "device-1", MessageKind::LibraryReport, 1050).is_err());
+        assert!(verify_and_claim_paired(&mut conn, &env, &sig, &payload,
+            "device-1", MessageKind::LibraryReport, 1050).unwrap());
+        assert!(!verify_and_claim_paired(&mut conn, &env, &sig, &payload,
+            "device-1", MessageKind::LibraryReport, 1050).unwrap());
+    }
+
+    #[test]
+    fn device_pairing_revoke_persists_and_rejects_new_messages() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("trust.db");
+        let mut conn = Connection::open(&path).unwrap();
+        initialize_trust_store(&conn).unwrap();
+        let (key, env, payload, sig) = fixture();
+        register_approved_key(&conn, "device-1", "key-1", MessageKind::LibraryReport,
+            key.public_key().as_ref()).unwrap();
+        assert!(revoke_key(&conn, "device-1", "key-1", MessageKind::LibraryReport).unwrap());
+        drop(conn);
+        conn = Connection::open(&path).unwrap();
+        assert!(verify_and_claim_paired(&mut conn, &env, &sig, &payload,
+            "device-1", MessageKind::LibraryReport, 1050).is_err());
+        assert!(register_approved_key(&conn, "device-1", "key-1", MessageKind::LibraryReport,
+            key.public_key().as_ref()).is_err());
+    }
+}
