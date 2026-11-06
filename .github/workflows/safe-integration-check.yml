@@ -1,7 +1,7 @@
-name: Integrated snapshot checks
+name: Device report and snapshot integration
 on:
   push:
-    branches: [codex/integrate-shallow-snapshots]
+    branches: [codex/honest-device-report-status]
     paths: ['.github/workflows/safe-integration-check.yml']
 permissions:
   contents: read
