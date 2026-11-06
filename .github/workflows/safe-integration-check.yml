@@ -1,7 +1,7 @@
-name: Signed device envelope checks
+name: Signed envelope replay checks
 on:
   push:
-    branches: [codex/signed-device-envelope]
+    branches: [codex/signed-envelope-replay-guard]
     paths: ['.github/workflows/safe-integration-check.yml']
 permissions:
   contents: read
