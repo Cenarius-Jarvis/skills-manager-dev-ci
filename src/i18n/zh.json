@@ -300,6 +300,7 @@
     "manageTitle": "设备管理",
     "refreshFailed": "刷新设备通道失败。",
     "cachedProjectionNotice": "这里显示的是本地保存的设备上报记录，可能未包含设备当前的全部技能。",
+    "reportUnauthenticated": "设备报告暂未进行签名和身份验证；拥有通道仓库写入权限的人都可能修改报告。",
     "channelNotChecked": "当前页面尚未成功刷新通道。",
     "channelIncomplete": "上一次成功刷新发现问题，设备信息可能不完整：",
     "channelNoWarnings": "上一次成功刷新通道时未报告问题。",
