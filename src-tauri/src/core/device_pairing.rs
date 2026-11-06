@@ -161,6 +161,38 @@ pub fn resume_unprepared_claim(
     Ok(Some(ClaimedDeviceMessage { envelope, payload }))
 }
 
+
+/// Informational only: pending messages still require full verification.
+#[derive(Debug, PartialEq, Eq)]
+pub struct InboxRecoveryEntry { pub message_id: String, pub state: InboxRecoveryState }
+#[derive(Debug, PartialEq, Eq)]
+pub enum InboxRecoveryState { PendingVerification, Expired, TrustUnavailable, PreparedOutcomeUnknown }
+
+/// Inspect up to 256 commands for one device; prepared never implies replay.
+pub fn list_command_recovery(conn: &Connection, device_id: &str, now: i64) -> Result<Vec<InboxRecoveryEntry>> {
+    if !valid_id(device_id) { bail!("invalid device id"); }
+    let mut stmt = conn.prepare(
+        "SELECT b.message_id, b.prepared, b.expires_at,
+                EXISTS(SELECT 1 FROM device_trusted_keys_v1 k
+                    WHERE k.device_id=b.device_id AND k.key_id=b.key_id
+                    AND k.purpose=b.purpose AND k.active=1)
+         FROM verified_message_bindings_v1 b
+         JOIN verified_message_inbox_v1 i ON i.device_id=b.device_id AND i.message_id=b.message_id
+         WHERE b.device_id=?1 AND b.purpose='command'
+         ORDER BY b.issued_at, b.message_id LIMIT 256")?;
+    let rows = stmt.query_map(params![device_id], |row| {
+        let prepared: i64 = row.get(1)?;
+        let expires_at: i64 = row.get(2)?;
+        let trusted: bool = row.get(3)?;
+        let state = if prepared != 0 { InboxRecoveryState::PreparedOutcomeUnknown }
+            else if !trusted { InboxRecoveryState::TrustUnavailable }
+            else if now >= expires_at { InboxRecoveryState::Expired }
+            else { InboxRecoveryState::PendingVerification };
+        Ok(InboxRecoveryEntry { message_id: row.get(0)?, state })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 /// A command whose signature, replay claim, current local trust, and time
 /// window were checked. This does not approve any agent/root or perform work.
 pub struct PreparedDeviceCommand { claimed: ClaimedDeviceMessage }
@@ -413,6 +445,25 @@ mod tests {
         conn.execute_batch("DROP TRIGGER fail_inbox;").unwrap();
         assert!(verify_and_claim_paired(&mut conn, &env, &sig, &payload,
             "device-1", MessageKind::LibraryReport, 1050).unwrap().is_some());
+    }
+
+    #[test]
+    fn device_pairing_recovery_inventory_never_treats_prepared_as_retryable() {
+        let (mut conn, claimed) = claimed_command_fixture();
+        assert_eq!(list_command_recovery(&conn, "device-1", 1051).unwrap()[0].state,
+            InboxRecoveryState::PendingVerification);
+        assert!(list_command_recovery(&conn, "other", 1051).unwrap().is_empty());
+        assert_eq!(list_command_recovery(&conn, "device-1", 1100).unwrap()[0].state,
+            InboxRecoveryState::Expired);
+        prepare_claimed_command(&mut conn, claimed, 1051).unwrap();
+        revoke_key(&conn, "device-1", "key-1", MessageKind::Command).unwrap();
+        assert_eq!(list_command_recovery(&conn, "device-1", 1100).unwrap()[0].state,
+            InboxRecoveryState::PreparedOutcomeUnknown);
+        let (conn, _) = claimed_command_fixture();
+        revoke_key(&conn, "device-1", "key-1", MessageKind::Command).unwrap();
+        assert_eq!(list_command_recovery(&conn, "device-1", 1051).unwrap()[0].state,
+            InboxRecoveryState::TrustUnavailable);
+        assert!(list_command_recovery(&conn, "../bad", 1051).is_err());
     }
 
 }
