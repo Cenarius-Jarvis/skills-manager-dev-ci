@@ -504,3 +504,115 @@ fn two_device_simulation_updates_pinned_skill_and_protects_local_edits() -> Resu
     assert_eq!(result.result, "success");
     Ok(())
 }
+
+
+/// A child process used only in this test suite. Both exits intentionally skip
+/// destructors to model abrupt termination. It operates under a verified
+/// temporary fixture directory and cannot address user-chosen agent paths.
+#[test]
+fn two_device_simulation_crash_worker() {
+    let Some(root) = std::env::var_os("SM_TEST_CRASH_ROOT") else { return; };
+    let root = std::path::PathBuf::from(root);
+    let temp = std::env::temp_dir().canonicalize().unwrap();
+    let canonical = root.canonicalize().unwrap();
+    assert_eq!(canonical.parent(), Some(temp.as_path()));
+    assert!(canonical.file_name().unwrap().to_string_lossy().starts_with("skills-two-device-crash-"));
+    let phase = std::env::var("SM_TEST_CRASH_PHASE").unwrap();
+    if phase == "before" { std::process::exit(23); }
+    assert_eq!(phase, "after");
+    let _guard = central_repo::test_base_dir_lock();
+    let base = canonical.join("fake-device-manager");
+    central_repo::set_test_base_dir_override(Some(base.clone()));
+    let store = SkillStore::new(&base.join("skills-manager.db")).unwrap();
+    let target = native_managed_executor::deploy_new_slot(
+        &store, "fixture-skill", "codex", &canonical.join("fake-agent")
+    ).unwrap();
+    assert_eq!(std::fs::read(target.join("SKILL.md")).unwrap(), b"# fixture crash");
+    // Abrupt exit after deployment, before generating a receipt.
+    std::process::exit(23);
+}
+
+fn crash_scenario(phase: &str) -> Result<()> {
+    let tmp = tempfile::Builder::new().prefix("skills-two-device-crash-").tempdir()?;
+    let root = tmp.path();
+    let channel_path = root.join("channel.git");
+    let channel = Repository::init_bare(&channel_path)?;
+    let controller = Repository::init(root.join("controller"))?;
+    let key = keypair();
+    let request = signed(&key, MessageKind::Command, "controller-key", "crash-command",
+        b"fixture command".to_vec());
+    write_wire(&controller, "command.json", &request)?;
+    commit_all(&controller, "fixture crash request")?;
+    push(&controller, &channel_path)?;
+    channel.set_head("refs/heads/main")?;
+
+    let device = Repository::clone(channel_path.to_str().unwrap(), root.join("device-work"))?;
+    let received = read_wire(&device, "command.json")?;
+    let db_path = root.join("device-trust.db");
+    let mut trust = Connection::open(&db_path)?;
+    device_pairing::initialize_trust_store(&trust)?;
+    device_pairing::register_approved_key(&trust, "fixture-device", "controller-key",
+        MessageKind::Command, key.public_key().as_ref())?;
+    let claimed = device_pairing::verify_and_claim_paired(&mut trust, &received.envelope,
+        &received.signature, &received.payload, "fixture-device", MessageKind::Command, 1050)?
+        .ok_or_else(|| anyhow::anyhow!("unexpected fixture replay"))?;
+    let prepared = device_pairing::prepare_claimed_command(&mut trust, claimed, 1051)?;
+    assert_eq!(prepared.payload(), b"fixture command");
+    drop(prepared);
+    drop(trust);
+
+    let base = root.join("fake-device-manager");
+    let source = base.join("skills").join("sample");
+    let agent = root.join("fake-agent");
+    std::fs::create_dir_all(&source)?;
+    std::fs::create_dir_all(&agent)?;
+    std::fs::write(source.join("SKILL.md"), b"# fixture crash")?;
+    let store = SkillStore::new(&base.join("skills-manager.db"))?;
+    let hash = content_hash::hash_directory(&source)?;
+    store.insert_skill(&SkillRecord {
+        id: "fixture-skill".into(), name: "sample".into(), description: None,
+        source_type: "git".into(), source_ref: Some("https://example.invalid/fixture.git".into()),
+        source_ref_resolved: None, source_subpath: None, source_branch: None,
+        source_revision: None, remote_revision: None,
+        central_path: source.to_string_lossy().into_owned(), content_hash: Some(hash),
+        enabled: true, created_at: 1, updated_at: 1, status: "ok".into(),
+        update_status: "up_to_date".into(), last_checked_at: None, last_check_error: None,
+    })?;
+    drop(store);
+
+    let child = std::process::Command::new(std::env::current_exe()?)
+        .args(["--exact", "core::two_device_simulation::two_device_simulation_crash_worker"])
+        .env("SM_TEST_CRASH_ROOT", root)
+        .env("SM_TEST_CRASH_PHASE", phase)
+        .output()?;
+    assert_eq!(child.status.code(), Some(23), "crash worker did not reach the intended exit");
+    assert!(String::from_utf8_lossy(&child.stdout).contains("running 1 test"));
+
+    // On restart a previously prepared command cannot be blindly replayed,
+    // and no remote receipt means the controller must treat outcome as unknown.
+    let mut reopened_trust = Connection::open(&db_path)?;
+    assert!(device_pairing::verify_and_claim_paired(&mut reopened_trust, &received.envelope,
+        &received.signature, &received.payload, "fixture-device", MessageKind::Command, 1052)?.is_none());
+    let observer = Repository::clone(channel_path.to_str().unwrap(), root.join("controller-observer"))?;
+    assert!(!observer.workdir().unwrap().join("receipt.json").exists());
+    let reopened_store = SkillStore::new(&base.join("skills-manager.db"))?;
+    let rows = reopened_store.get_targets_for_skill("fixture-skill")?;
+    if phase == "after" {
+        assert_eq!(rows.len(), 1);
+        assert_eq!(std::fs::read(agent.join("sample").join("SKILL.md"))?, b"# fixture crash");
+    } else {
+        assert!(rows.is_empty());
+        assert!(!agent.join("sample").exists());
+    }
+    Ok(())
+}
+
+#[test]
+fn two_device_simulation_crash_before_deploy_is_not_replayed() -> Result<()> {
+    crash_scenario("before")
+}
+
+#[test]
+fn two_device_simulation_crash_after_deploy_is_not_replayed() -> Result<()> {
+    crash_scenario("after")
+}
