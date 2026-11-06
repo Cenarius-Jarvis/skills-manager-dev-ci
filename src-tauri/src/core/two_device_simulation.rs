@@ -277,7 +277,8 @@ fn two_device_simulation_installs_pinned_skill_and_reports_receipt() -> Result<(
     assert!(checked_fixture_source(&fetched, &action).is_err());
     std::fs::write(fetched_skill.join("SKILL.md"), b"# fixture install")?;
     let mut wrong_commit = action.source_commit.clone();
-    wrong_commit.replace_range(0..1, if wrong_commit.starts_with('0') { "1" } else { "0" });
+    let replacement = if wrong_commit.starts_with('0') { "1" } else { "0" };
+    wrong_commit.replace_range(0..1, replacement);
     let wrong = PinnedInstallCommand { skill_id: action.skill_id.clone(), agent: action.agent.clone(),
         source_commit: wrong_commit, source_hash: action.source_hash.clone() };
     assert!(checked_fixture_source(&fetched, &wrong).is_err());
