@@ -581,11 +581,11 @@ fn crash_scenario(phase: &str) -> Result<()> {
     drop(store);
 
     let child = std::process::Command::new(std::env::current_exe()?)
-        .args(["--exact", "core::two_device_simulation::two_device_simulation_crash_worker"])
+        .args(["--exact", "core::two_device_simulation::two_device_simulation_crash_worker", "--nocapture"])
         .env("SM_TEST_CRASH_ROOT", root)
         .env("SM_TEST_CRASH_PHASE", phase)
         .output()?;
-    assert_eq!(child.status.code(), Some(23), "crash worker did not reach the intended exit");
+    assert_eq!(child.status.code(), Some(23), "crash worker did not reach intended exit; stdout: {} ; stderr: {}", String::from_utf8_lossy(&child.stdout), String::from_utf8_lossy(&child.stderr));
 
     // On restart a previously prepared command cannot be blindly replayed,
     // and no remote receipt means the controller must treat outcome as unknown.
