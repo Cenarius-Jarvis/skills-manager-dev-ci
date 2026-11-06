@@ -58,13 +58,26 @@ pub fn revoke_key(conn: &Connection, device_id: &str, key_id: &str, kind: Messag
     )? == 1)
 }
 
+/// An owned copy of the exact envelope and payload that were verified and
+/// claimed. This is not authorization to execute; revalidate local approval
+/// and key revocation at the action boundary.
+pub struct ClaimedDeviceMessage {
+    envelope: DeviceEnvelope,
+    payload: Vec<u8>,
+}
+
+impl ClaimedDeviceMessage {
+    pub fn envelope(&self) -> &DeviceEnvelope { &self.envelope }
+    pub fn payload(&self) -> &[u8] { &self.payload }
+}
+
 /// Atomically check locally paired identity and claim the message ID. The
 /// caller must perform a fresh authorization check before any side effect;
 /// revocation after this transaction is not an execution authorization.
 pub fn verify_and_claim_paired(
     conn: &mut Connection, envelope: &DeviceEnvelope, signature: &[u8], payload: &[u8],
     expected_device: &str, expected_kind: MessageKind, now: i64,
-) -> Result<bool> {
+) -> Result<Option<ClaimedDeviceMessage>> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let public_key: Option<Vec<u8>> = tx.query_row(
         "SELECT public_key FROM device_trusted_keys_v1
@@ -76,8 +89,11 @@ pub fn verify_and_claim_paired(
     let verified = device_envelope::verify_envelope(envelope, signature, payload, &public_key,
         expected_device, &envelope.key_id, expected_kind, now)?;
     let accepted = device_envelope::claim_verified_once(&tx, &verified, now)?;
+    let claimed = accepted.then(|| ClaimedDeviceMessage {
+        envelope: envelope.clone(), payload: payload.to_vec(),
+    });
     tx.commit()?;
-    Ok(accepted)
+    Ok(claimed)
 }
 
 #[cfg(test)]
@@ -116,10 +132,12 @@ mod tests {
             "device-1", MessageKind::Command, 1050).is_err());
         assert!(verify_and_claim_paired(&mut conn, &env, &sig, b"changed",
             "device-1", MessageKind::LibraryReport, 1050).is_err());
+        let claimed = verify_and_claim_paired(&mut conn, &env, &sig, &payload,
+            "device-1", MessageKind::LibraryReport, 1050).unwrap().unwrap();
+        assert_eq!(claimed.payload(), payload.as_slice());
+        assert_eq!(claimed.envelope().message_id, env.message_id);
         assert!(verify_and_claim_paired(&mut conn, &env, &sig, &payload,
-            "device-1", MessageKind::LibraryReport, 1050).unwrap());
-        assert!(!verify_and_claim_paired(&mut conn, &env, &sig, &payload,
-            "device-1", MessageKind::LibraryReport, 1050).unwrap());
+            "device-1", MessageKind::LibraryReport, 1050).unwrap().is_none());
     }
 
     #[test]
