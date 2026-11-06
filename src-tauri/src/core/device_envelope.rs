@@ -209,7 +209,7 @@ mod tests {
                 claim_verified_once(&conn, &proof, 1050).unwrap()
             })
         }).collect();
-        let successes = workers.into_iter().filter(|worker| worker.join().unwrap()).count();
+        let successes = workers.into_iter().map(|worker| worker.join().unwrap()).filter(|won| *won).count();
         assert_eq!(successes, 1);
     }
 
