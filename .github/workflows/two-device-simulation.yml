@@ -1,4 +1,4 @@
-name: Two-device crash simulation
+name: Two-device crash diagnostics
 on:
   push:
     branches: [codex/two-device-crash-simulation]
