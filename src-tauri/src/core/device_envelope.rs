@@ -50,7 +50,7 @@ pub fn verify_envelope(
     envelope: &DeviceEnvelope, signature: &[u8], payload: &[u8],
     trusted_public_key: &[u8], expected_device: &str, expected_key_id: &str,
     expected_kind: MessageKind, now: i64,
-) -> Result<()> {
+) -> Result<VerifiedEnvelope> {
     if envelope.version != 1 || envelope.kind != expected_kind || !identifier(&envelope.message_id)
         || !identifier(&envelope.device_id) || !identifier(&envelope.key_id)
         || envelope.device_id != expected_device || envelope.key_id != expected_key_id
@@ -67,7 +67,50 @@ pub fn verify_envelope(
     UnparsedPublicKey::new(&ED25519, trusted_public_key)
         .verify(&signing_bytes(envelope)?, signature)
         .map_err(|_| anyhow::anyhow!("signed envelope verification failed"))?;
+    Ok(VerifiedEnvelope {
+        device_id: envelope.device_id.clone(),
+        message_id: envelope.message_id.clone(),
+        issued_at: envelope.issued_at,
+        expires_at: envelope.expires_at,
+    })
+}
+
+/// Proof that signature, identity, payload and time were checked. Fields are
+/// private so a caller cannot construct a proof for an unsigned message.
+pub struct VerifiedEnvelope {
+    device_id: String,
+    message_id: String,
+    issued_at: i64,
+    expires_at: i64,
+}
+
+/// Set up a durable replay ledger in the caller's explicitly chosen database.
+/// This does not pair devices or authorize any operation.
+pub fn initialize_claim_store(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS verified_message_claims_v1 (
+            device_id TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            claimed_at INTEGER NOT NULL,
+            PRIMARY KEY(device_id, message_id)
+        );",
+    )?;
     Ok(())
+}
+
+/// Atomically reserve a verified message ID. A false result is a replay.
+/// This ledger does not replace local authorization or crash recovery.
+pub fn claim_verified_once(
+    conn: &rusqlite::Connection, verified: &VerifiedEnvelope, now: i64,
+) -> Result<bool> {
+    if now < verified.issued_at || now >= verified.expires_at {
+        bail!("verified envelope expired before claim");
+    }
+    let rows = conn.execute(
+        "INSERT OR IGNORE INTO verified_message_claims_v1 (device_id, message_id, claimed_at) VALUES (?1, ?2, ?3)",
+        rusqlite::params![verified.device_id, verified.message_id, now],
+    )?;
+    Ok(rows == 1)
 }
 
 #[cfg(test)]
@@ -124,4 +167,50 @@ mod tests {
         value["unexpected"] = serde_json::json!(true);
         assert!(serde_json::from_value::<DeviceEnvelope>(value).is_err());
     }
+    #[test]
+    fn device_envelope_replay_guard_survives_reopen_and_rejects_expired_claim() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("claims.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        initialize_claim_store(&conn).unwrap();
+        let (key, env, payload, sig) = fixture();
+        let proof = verify_envelope(&env, &sig, &payload, key.public_key().as_ref(),
+            "device-1", "key-1", MessageKind::LibraryReport, 1050).unwrap();
+        assert!(claim_verified_once(&conn, &proof, 1100).is_err());
+        assert!(claim_verified_once(&conn, &proof, 1050).unwrap());
+        drop(conn);
+        let reopened = rusqlite::Connection::open(&db_path).unwrap();
+        assert!(!claim_verified_once(&reopened, &proof, 1051).unwrap());
+    }
+
+    #[test]
+    fn device_envelope_replay_guard_allows_only_one_concurrent_claim() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("claims.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        initialize_claim_store(&conn).unwrap();
+        drop(conn);
+        let (key, env, payload, sig) = fixture();
+        let key_bytes = key.public_key().as_ref().to_vec();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let workers: Vec<_> = (0..2).map(|_| {
+            let path = db_path.clone();
+            let env = env.clone();
+            let payload = payload.clone();
+            let sig = sig.clone();
+            let key_bytes = key_bytes.clone();
+            let barrier = std::sync::Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let conn = rusqlite::Connection::open(path).unwrap();
+                conn.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+                let proof = verify_envelope(&env, &sig, &payload, &key_bytes,
+                    "device-1", "key-1", MessageKind::LibraryReport, 1050).unwrap();
+                barrier.wait();
+                claim_verified_once(&conn, &proof, 1050).unwrap()
+            })
+        }).collect();
+        let successes = workers.into_iter().filter(|worker| worker.join().unwrap()).count();
+        assert_eq!(successes, 1);
+    }
+
 }
