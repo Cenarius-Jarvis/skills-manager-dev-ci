@@ -2,6 +2,7 @@
 //! Callers must obtain explicit local approval before registering a key.
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use sha2::{Digest, Sha256};
 use super::device_envelope::{self, DeviceEnvelope, MessageKind};
 
 fn valid_id(value: &str) -> bool {
@@ -28,6 +29,13 @@ pub fn initialize_trust_store(conn: &Connection) -> Result<()> {
             public_key BLOB NOT NULL CHECK(length(public_key) = 32),
             active INTEGER NOT NULL CHECK(active IN (0, 1)),
             PRIMARY KEY(device_id, key_id, purpose)
+        );
+        CREATE TABLE IF NOT EXISTS verified_message_bindings_v1 (
+            device_id TEXT NOT NULL, message_id TEXT NOT NULL, key_id TEXT NOT NULL,
+            purpose TEXT NOT NULL, payload_sha256 TEXT NOT NULL,
+            issued_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+            prepared INTEGER NOT NULL DEFAULT 0 CHECK(prepared IN (0, 1)),
+            PRIMARY KEY(device_id, message_id)
         );",
     )?;
     Ok(())
@@ -89,11 +97,51 @@ pub fn verify_and_claim_paired(
     let verified = device_envelope::verify_envelope(envelope, signature, payload, &public_key,
         expected_device, &envelope.key_id, expected_kind, now)?;
     let accepted = device_envelope::claim_verified_once(&tx, &verified, now)?;
-    let claimed = accepted.then(|| ClaimedDeviceMessage {
-        envelope: envelope.clone(), payload: payload.to_vec(),
-    });
+    let claimed = if accepted {
+        tx.execute(
+            "INSERT INTO verified_message_bindings_v1
+             (device_id, message_id, key_id, purpose, payload_sha256, issued_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![envelope.device_id, envelope.message_id, envelope.key_id, purpose(envelope.kind),
+                envelope.payload_sha256, envelope.issued_at, envelope.expires_at],
+        )?;
+        Some(ClaimedDeviceMessage { envelope: envelope.clone(), payload: payload.to_vec() })
+    } else { None };
     tx.commit()?;
     Ok(claimed)
+}
+
+/// A command whose signature, replay claim, current local trust, and time
+/// window were checked. This does not approve any agent/root or perform work.
+pub struct PreparedDeviceCommand { claimed: ClaimedDeviceMessage }
+
+impl PreparedDeviceCommand {
+    pub fn envelope(&self) -> &DeviceEnvelope { self.claimed.envelope() }
+    pub fn payload(&self) -> &[u8] { self.claimed.payload() }
+}
+
+/// Atomically recheck trust and consume the preparation slot exactly once.
+/// Agent/root approval and crash-safe execution are still required separately.
+pub fn prepare_claimed_command(
+    conn: &mut Connection, claimed: ClaimedDeviceMessage, now: i64,
+) -> Result<PreparedDeviceCommand> {
+    let env = claimed.envelope();
+    if env.kind != MessageKind::Command { bail!("message is not a command"); }
+    let digest = hex::encode(Sha256::digest(claimed.payload()));
+    if digest != env.payload_sha256 { bail!("claimed message payload changed"); }
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let rows = tx.execute(
+        "UPDATE verified_message_bindings_v1 SET prepared = 1
+         WHERE device_id = ?1 AND message_id = ?2 AND key_id = ?3 AND purpose = 'command'
+           AND payload_sha256 = ?4 AND issued_at = ?5 AND expires_at = ?6
+           AND ?7 >= issued_at AND ?7 < expires_at AND prepared = 0
+           AND EXISTS (SELECT 1 FROM device_trusted_keys_v1
+                       WHERE device_id = ?1 AND key_id = ?3 AND purpose = 'command' AND active = 1)",
+        params![env.device_id, env.message_id, env.key_id, digest, env.issued_at, env.expires_at, now],
+    )?;
+    if rows != 1 { bail!("claim missing, expired, already prepared, or key revoked"); }
+    tx.commit()?;
+    Ok(PreparedDeviceCommand { claimed })
 }
 
 #[cfg(test)]
