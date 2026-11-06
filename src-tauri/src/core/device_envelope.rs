@@ -24,7 +24,7 @@ pub struct DeviceEnvelope {
     pub payload_sha256: String,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageKind { Command, Receipt, LibraryReport }
 
@@ -48,9 +48,10 @@ fn signing_bytes(envelope: &DeviceEnvelope) -> Result<Vec<u8>> {
 /// authorize the operation before executing it.
 pub fn verify_envelope(
     envelope: &DeviceEnvelope, signature: &[u8], payload: &[u8],
-    trusted_public_key: &[u8], expected_device: &str, expected_key_id: &str, now: i64,
+    trusted_public_key: &[u8], expected_device: &str, expected_key_id: &str,
+    expected_kind: MessageKind, now: i64,
 ) -> Result<()> {
-    if envelope.version != 1 || !identifier(&envelope.message_id)
+    if envelope.version != 1 || envelope.kind != expected_kind || !identifier(&envelope.message_id)
         || !identifier(&envelope.device_id) || !identifier(&envelope.key_id)
         || envelope.device_id != expected_device || envelope.key_id != expected_key_id
         || !hex_sha256(&envelope.payload_sha256)
@@ -92,27 +93,28 @@ mod tests {
     fn device_envelope_accepts_locally_trusted_key_and_exact_payload() {
         let (key, env, payload, sig) = fixture();
         assert!(verify_envelope(&env, &sig, &payload, key.public_key().as_ref(),
-            "device-1", "key-1", 1050).is_ok());
+            "device-1", "key-1", MessageKind::LibraryReport, 1050).is_ok());
     }
 
     #[test]
     fn device_envelope_rejects_tampering_wrong_identity_and_time() {
         let (key, env, payload, sig) = fixture();
         let pk = key.public_key().as_ref();
-        assert!(verify_envelope(&env, &sig, b"modified", pk, "device-1", "key-1", 1050).is_err());
-        assert!(verify_envelope(&env, &sig, &payload, pk, "device-2", "key-1", 1050).is_err());
-        assert!(verify_envelope(&env, &sig, &payload, pk, "device-1", "key-2", 1050).is_err());
-        assert!(verify_envelope(&env, &sig, &payload, pk, "device-1", "key-1", 999).is_err());
-        assert!(verify_envelope(&env, &sig, &payload, pk, "device-1", "key-1", 1100).is_err());
+        assert!(verify_envelope(&env, &sig, b"modified", pk, "device-1", "key-1", MessageKind::LibraryReport, 1050).is_err());
+        assert!(verify_envelope(&env, &sig, &payload, pk, "device-2", "key-1", MessageKind::LibraryReport, 1050).is_err());
+        assert!(verify_envelope(&env, &sig, &payload, pk, "device-1", "key-2", MessageKind::LibraryReport, 1050).is_err());
+        assert!(verify_envelope(&env, &sig, &payload, pk, "device-1", "key-1", MessageKind::LibraryReport, 999).is_err());
+        assert!(verify_envelope(&env, &sig, &payload, pk, "device-1", "key-1", MessageKind::LibraryReport, 1100).is_err());
+        assert!(verify_envelope(&env, &sig, &payload, pk, "device-1", "key-1", MessageKind::Command, 1050).is_err());
         let mut changed = env.clone(); changed.kind = MessageKind::Command;
-        assert!(verify_envelope(&changed, &sig, &payload, pk, "device-1", "key-1", 1050).is_err());
+        assert!(verify_envelope(&changed, &sig, &payload, pk, "device-1", "key-1", MessageKind::LibraryReport, 1050).is_err());
         let mut changed = env.clone(); changed.expires_at = 3000;
-        assert!(verify_envelope(&changed, &sig, &payload, pk, "device-1", "key-1", 1050).is_err());
+        assert!(verify_envelope(&changed, &sig, &payload, pk, "device-1", "key-1", MessageKind::LibraryReport, 1050).is_err());
         let mut changed_sig = sig.clone(); changed_sig[0] ^= 1;
-        assert!(verify_envelope(&env, &changed_sig, &payload, pk, "device-1", "key-1", 1050).is_err());
+        assert!(verify_envelope(&env, &changed_sig, &payload, pk, "device-1", "key-1", MessageKind::LibraryReport, 1050).is_err());
         let (other, _, _, _) = fixture();
         assert!(verify_envelope(&env, &sig, &payload, other.public_key().as_ref(),
-            "device-1", "key-1", 1050).is_err());
+            "device-1", "key-1", MessageKind::LibraryReport, 1050).is_err());
     }
 
     #[test]
