@@ -179,7 +179,7 @@ pub fn list_command_recovery(conn: &Connection, device_id: &str, now: i64) -> Re
          FROM verified_message_bindings_v1 b
          JOIN verified_message_inbox_v1 i ON i.device_id=b.device_id AND i.message_id=b.message_id
          WHERE b.device_id=?1 AND b.purpose='command'
-         ORDER BY b.issued_at, b.message_id LIMIT 256")?;
+         ORDER BY b.issued_at, b.message_id LIMIT 257")?;
     let rows = stmt.query_map(params![device_id], |row| {
         let prepared: i64 = row.get(1)?;
         let expires_at: i64 = row.get(2)?;
@@ -190,7 +190,9 @@ pub fn list_command_recovery(conn: &Connection, device_id: &str, now: i64) -> Re
             else { InboxRecoveryState::PendingVerification };
         Ok(InboxRecoveryEntry { message_id: row.get(0)?, state })
     })?;
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    let entries = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    if entries.len() > 256 { bail!("recovery inventory exceeds limit; pagination required"); }
+    Ok(entries)
 }
 
 /// A command whose signature, replay claim, current local trust, and time
