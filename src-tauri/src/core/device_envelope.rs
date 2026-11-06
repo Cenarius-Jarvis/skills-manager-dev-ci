@@ -37,7 +37,7 @@ fn hex_sha256(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-fn signing_bytes(envelope: &DeviceEnvelope) -> Result<Vec<u8>> {
+pub(crate) fn signing_bytes(envelope: &DeviceEnvelope) -> Result<Vec<u8>> {
     let mut bytes = DOMAIN.to_vec();
     bytes.extend_from_slice(&serde_json::to_vec(envelope)?);
     Ok(bytes)
