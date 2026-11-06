@@ -1,7 +1,7 @@
-name: Device pairing ledger checks
+name: Verified device message integration
 on:
   push:
-    branches: [codex/device-pairing-ledger]
+    branches: [codex/bind-verified-payload]
     paths: ['.github/workflows/safe-integration-check.yml']
 permissions:
   contents: read
