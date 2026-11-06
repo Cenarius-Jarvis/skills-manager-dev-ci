@@ -567,14 +567,17 @@ fn crash_scenario(phase: &str) -> Result<()> {
     std::fs::create_dir_all(&source)?;
     std::fs::create_dir_all(&agent)?;
     std::fs::write(source.join("SKILL.md"), b"# fixture crash")?;
-    let store = SkillStore::new(&base.join("skills-manager.db"))?;
-    let hash = content_hash::hash_directory(&source)?;
+    // Parent and child must use the same canonical Windows path spelling.
+    let canonical_base = base.canonicalize()?;
+    let canonical_source = canonical_base.join("skills").join("sample");
+    let store = SkillStore::new(&canonical_base.join("skills-manager.db"))?;
+    let hash = content_hash::hash_directory(&canonical_source)?;
     store.insert_skill(&SkillRecord {
         id: "fixture-skill".into(), name: "sample".into(), description: None,
         source_type: "git".into(), source_ref: Some("https://example.invalid/fixture.git".into()),
         source_ref_resolved: None, source_subpath: None, source_branch: None,
         source_revision: None, remote_revision: None,
-        central_path: source.to_string_lossy().into_owned(), content_hash: Some(hash),
+        central_path: canonical_source.to_string_lossy().into_owned(), content_hash: Some(hash),
         enabled: true, created_at: 1, updated_at: 1, status: "ok".into(),
         update_status: "up_to_date".into(), last_checked_at: None, last_check_error: None,
     })?;
