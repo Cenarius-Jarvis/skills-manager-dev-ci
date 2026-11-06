@@ -1,7 +1,7 @@
-name: Safe integration checks
+name: Integrated snapshot checks
 on:
   push:
-    branches: [codex/safe-integration-candidate]
+    branches: [codex/integrate-shallow-snapshots]
     paths: ['.github/workflows/safe-integration-check.yml']
 permissions:
   contents: read
