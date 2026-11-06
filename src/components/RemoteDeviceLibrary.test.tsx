@@ -20,6 +20,7 @@ it("shows a fetch failure while keeping the last device report visible", async (
       instructions={[]} loading={false} error="network unavailable" onRefresh={() => {}} />));
     expect(host.querySelector('[role="alert"]')?.textContent).toContain("network unavailable");
     expect(host.querySelector('[data-testid="remote-device-dev-remote"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="remote-report-authenticity"]')?.textContent).toContain("devices.reportUnauthenticated");
   } finally {
     await act(async () => root.unmount());
     host.remove();
