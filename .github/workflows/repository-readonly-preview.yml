@@ -1,7 +1,7 @@
-name: Verify preview renders repository interface
+name: Verify persistent isolated repository preview
 on:
   push:
-    branches: [codex/fix-preview-startup]
+    branches: [codex/persistent-repository-preview]
     paths: ['.github/workflows/repository-readonly-preview.yml']
 permissions:
   contents: read
@@ -31,7 +31,7 @@ jobs:
         run: npx vite build --config vite.repository-preview.config.ts
       - name: Test snapshot backend
         run: cargo test --manifest-path src-tauri/Cargo.toml --features isolated-repo-preview --lib repository_sources -- --test-threads=1
-      - name: Test preview temporary-store lifetime
+      - name: Test preview persistence and isolation
         run: cargo test --manifest-path src-tauri/Cargo.toml --features isolated-repo-preview --bin repository-readonly-preview -- --test-threads=1
       - name: Build standalone preview
         run: cargo build --manifest-path src-tauri/Cargo.toml --release --features isolated-repo-preview,tauri/custom-protocol --bin repository-readonly-preview
@@ -88,6 +88,30 @@ jobs:
           }
           foreach ($path in $protected) {
             if (Test-Path -LiteralPath $path) { throw "Preview created a protected fixture path: $path" }
+          }
+          $previewStore = Join-Path $env:LOCALAPPDATA 'dev.skillsmanager.repositoryreadonlypreview/preview-store'
+          $db = Join-Path $previewStore 'preview.db'
+          $key = Join-Path $previewStore '.secret.key'
+          if (-not (Test-Path -LiteralPath $db) -or -not (Test-Path -LiteralPath $key)) { throw 'Persistent preview database or key missing' }
+          $keyHash = (Get-FileHash -LiteralPath $key -Algorithm SHA256).Hash
+          $secondProcess = Start-Process -FilePath $exe -PassThru
+          try {
+            $deadline = (Get-Date).AddSeconds(45)
+            do {
+              Start-Sleep -Seconds 1
+              $secondProcess.Refresh()
+              if ($secondProcess.HasExited) { throw "Preview exited on restart: $($secondProcess.ExitCode)" }
+            } while ($secondProcess.MainWindowHandle -eq 0 -and (Get-Date) -lt $deadline)
+            if ($secondProcess.MainWindowHandle -eq 0) { throw 'Preview restart did not create a window' }
+            if ((Get-FileHash -LiteralPath $key -Algorithm SHA256).Hash -ne $keyHash) { throw 'Preview key changed on restart' }
+          } finally {
+            if (-not $secondProcess.HasExited) {
+              $null = $secondProcess.CloseMainWindow()
+              if (-not $secondProcess.WaitForExit(10000)) { Stop-Process -Id $secondProcess.Id }
+            }
+          }
+          foreach ($path in $protected) {
+            if (Test-Path -LiteralPath $path) { throw "Preview restart created a protected fixture path: $path" }
           }
       - name: Prepare preview and instructions
         shell: pwsh
