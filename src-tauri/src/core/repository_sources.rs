@@ -273,7 +273,7 @@ mod tests {
         let remote = temp.path().join("remote.git");
         write_fake_repository(&remote, &["old"], false)?;
         let head = write_fake_repository(&remote, &["latest"], false)?;
-        let url = url::Url::from_directory_path(&remote)
+        let url = reqwest::Url::from_directory_path(&remote)
             .map_err(|_| anyhow::anyhow!("fixture path is not a file URL"))?;
         let dest = temp.path().join("clone.git");
         clone_bare(url.as_str(), "main", &dest)?;
