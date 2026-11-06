@@ -139,4 +139,31 @@ mod tests {
         assert!(register_approved_key(&conn, "device-1", "key-1", MessageKind::LibraryReport,
             key.public_key().as_ref()).is_err());
     }
+    #[test]
+    fn device_pairing_revocation_commits_before_waiting_claim() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("trust.db");
+        let mut admin = Connection::open(&path).unwrap();
+        initialize_trust_store(&admin).unwrap();
+        let (key, env, payload, sig) = fixture();
+        register_approved_key(&admin, "device-1", "key-1", MessageKind::LibraryReport,
+            key.public_key().as_ref()).unwrap();
+        let tx = admin.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
+        assert!(revoke_key(&tx, "device-1", "key-1", MessageKind::LibraryReport).unwrap());
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut conn = Connection::open(path).unwrap();
+            conn.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+            ready_tx.send(()).unwrap();
+            verify_and_claim_paired(&mut conn, &env, &sig, &payload,
+                "device-1", MessageKind::LibraryReport, 1050).is_err()
+        });
+        ready_rx.recv().unwrap();
+        tx.commit().unwrap();
+        assert!(worker.join().unwrap());
+        let count: i64 = admin.query_row("SELECT COUNT(*) FROM verified_message_claims_v1", [],
+            |row| row.get(0)).unwrap();
+        assert_eq!(count, 0);
+    }
+
 }
