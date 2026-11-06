@@ -7,6 +7,7 @@ pub mod content_hash;
 pub mod crypto;
 pub mod device_executor;
 pub mod device_envelope;
+pub mod device_pairing;
 pub mod device_inventory;
 pub mod devices;
 pub mod error;
