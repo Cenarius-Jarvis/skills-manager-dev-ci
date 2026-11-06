@@ -141,6 +141,21 @@ mod tests {
     }
 
     #[test]
+    fn device_pairing_claimed_message_owns_verified_content() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        initialize_trust_store(&conn).unwrap();
+        let (key, mut env, mut payload, sig) = fixture();
+        register_approved_key(&conn, "device-1", "key-1", MessageKind::LibraryReport,
+            key.public_key().as_ref()).unwrap();
+        let claimed = verify_and_claim_paired(&mut conn, &env, &sig, &payload,
+            "device-1", MessageKind::LibraryReport, 1050).unwrap().unwrap();
+        payload[0] ^= 1;
+        env.message_id = "different".into();
+        assert_eq!(claimed.payload(), b"fixture");
+        assert_eq!(claimed.envelope().message_id, "msg-1");
+    }
+
+    #[test]
     fn device_pairing_revoke_persists_and_rejects_new_messages() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("trust.db");
