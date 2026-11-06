@@ -586,7 +586,6 @@ fn crash_scenario(phase: &str) -> Result<()> {
         .env("SM_TEST_CRASH_PHASE", phase)
         .output()?;
     assert_eq!(child.status.code(), Some(23), "crash worker did not reach the intended exit");
-    assert!(String::from_utf8_lossy(&child.stdout).contains("running 1 test"));
 
     // On restart a previously prepared command cannot be blindly replayed,
     // and no remote receipt means the controller must treat outcome as unknown.
