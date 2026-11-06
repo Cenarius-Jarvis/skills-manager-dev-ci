@@ -47,7 +47,14 @@ async fn repository_sources_refresh(state: State<'_, Preview>, id: String) -> Re
 
 fn open_preview_store_at(directory: &Path) -> anyhow::Result<SkillStore> {
     std::fs::create_dir_all(directory)?;
-    SkillStore::new(&directory.join("preview.db"))
+    // SkillStore creates its encryption key if missing. Serialize startup across
+    // processes so simultaneous first launches cannot replace each other's key.
+    let lock = std::fs::OpenOptions::new().create(true).read(true).write(true)
+        .open(directory.join("initialize.lock"))?;
+    fs2::FileExt::lock_exclusive(&lock)?;
+    let result = SkillStore::new(&directory.join("preview.db"));
+    fs2::FileExt::unlock(&lock)?;
+    result
 }
 
 fn main() {
@@ -105,4 +112,24 @@ mod tests {
         assert_eq!(restored.skills[0].name, "demo");
         assert!(!temp.path().join(".skills-manager").exists());
     }
+    #[test]
+    fn simultaneous_first_launch_preserves_shared_encryption_key() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("race-preview");
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let workers: Vec<_> = (0..2).map(|index| {
+            let directory = directory.clone();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                let store = open_preview_store_at(&directory).unwrap();
+                repos::add_source(&store, &format!("source-{index}"), None,
+                    "https://example.invalid/user/repo.git", "main", "").unwrap();
+            })
+        }).collect();
+        for worker in workers { worker.join().unwrap(); }
+        let reopened = open_preview_store_at(&directory).unwrap();
+        assert_eq!(reopened.list_repository_sources().unwrap().len(), 2);
+    }
+
 }
