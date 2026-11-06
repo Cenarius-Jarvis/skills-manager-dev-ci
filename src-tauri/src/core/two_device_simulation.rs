@@ -474,6 +474,7 @@ fn two_device_simulation_updates_pinned_skill_and_protects_local_edits() -> Resu
     store.update_skill_after_install(&action.skill_id, "sample", staged.description.as_deref(),
         Some(&action.source_commit), Some(&action.source_commit), Some(&staged.content_hash), "up_to_date")?;
     resync_copy_targets(&store, &action.skill_id)?;
+    super::sync_metadata::write_all_from_db_unlocked(&store)?;
     assert_eq!(std::fs::read(current.join("SKILL.md"))?, b"# fixture version 2");
     assert_eq!(std::fs::read(current.join("keep.md"))?, b"keep");
     assert_eq!(std::fs::read(agent_target.join("SKILL.md"))?, b"# fixture version 2");
