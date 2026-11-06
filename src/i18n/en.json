@@ -300,6 +300,7 @@
     "manageTitle": "Devices (management)",
     "refreshFailed": "Unable to refresh the device channel.",
     "cachedProjectionNotice": "Showing the local record of device reports; it may not include all skills currently on a device.",
+    "reportUnauthenticated": "Device reports are not signed or authenticated yet. Anyone with write access to the channel repository can change them.",
     "channelNotChecked": "No successful channel refresh has been performed in this view.",
     "channelIncomplete": "The last successful refresh reported problems. Device information may be incomplete:",
     "channelNoWarnings": "The last successful channel refresh reported no problems.",
