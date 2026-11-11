@@ -624,52 +624,69 @@ mod tests {
     }
 
     #[test]
-    fn signed_command_runs_end_to_end_and_answers_with_a_signed_receipt() {
+    fn signed_command_cycle_answers_with_a_signed_receipt() {
         let _guard = central_repo::test_base_dir_lock();
         let manager = manager_fixture();
         let device = device_fixture();
         central_repo::set_test_base_dir_override(Some(device.base.clone()));
         authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
-        let (channel_url, skill_url) = channel_and_source(manager._dir.path(), "demo-skill");
+        // A legal https URL that cannot be cloned: the full cycle is
+        // exercised without any network dependency, and the device must
+        // still answer with a signed receipt.
+        let (channel_url, _unused) = channel_and_source(manager._dir.path(), "unused");
         pair(&device, &manager);
 
-        let payload = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
+        let payload = deploy_payload(&manager, "https://example.invalid/skills.git", "codex", "demo-skill");
         publish_command(&manager, &channel_url, &payload);
 
         let config = SignedExecutorConfig::new(
             channel_url.clone(), BRANCH.to_string(), TARGET_DEVICE.to_string(),
         );
         let report = run_signed_once(&device.store, &config).unwrap();
-        assert_eq!(report.executed, 1, "outcomes: {:?}", report.outcomes);
+        assert_eq!(report.failed, 1, "outcomes: {:?}", report.outcomes);
 
-        // The skill is in the device library and the agent directory.
-        assert!(device.base.join("skills").join("demo-skill").join("SKILL.md").exists());
-        let deployed = device.agent_root.join("demo-skill").join("SKILL.md");
-        assert!(deployed.exists());
-
-        // A signed receipt landed on the channel and verifies.
         let receipts = signed_channel::fetch_signed_receipts(&channel_url, BRANCH, TARGET_DEVICE).unwrap();
         assert_eq!(receipts.len(), 1);
         let receipt = verify_receipt(&receipts[0], &device.pubkey);
-        assert_eq!(receipt.status, RECEIPT_STATUS_SUCCESS);
+        assert_eq!(receipt.status, RECEIPT_STATUS_FAILED);
         assert_eq!(receipt.instruction_id, report.outcomes[0].message_id);
-        assert!(receipt.target_path.as_deref().unwrap_or("").ends_with("demo-skill"));
 
-        // A second run sees the same command as a replay: nothing re-executes.
+        // A second run sees the same command as a replay: nothing re-runs.
         let second = run_signed_once(&device.store, &config).unwrap();
-        assert_eq!(second.executed, 0);
+        assert_eq!(second.failed, 0);
         assert_eq!(second.skipped, 1);
+
+        central_repo::set_test_base_dir_override(None);
+        let _ = device._dir; // keep the fixture alive to the end
+    }
+
+    /// The execution functions themselves, with a local skill source so no
+    /// network is involved. URL scheme enforcement lives one layer up and
+    /// is covered by signed_channel's validation tests.
+    #[test]
+    fn execute_deploy_and_undeploy_manage_library_and_agent_copies() {
+        let _guard = central_repo::test_base_dir_lock();
+        let manager = manager_fixture();
+        let device = device_fixture();
+        central_repo::set_test_base_dir_override(Some(device.base.clone()));
+        authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
+        let (_channel_url, skill_url) = channel_and_source(manager._dir.path(), "demo-skill");
+        pair(&device, &manager);
+
+        let payload = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
+        let target = execute_deploy(&device.store, &payload).unwrap();
+        assert!(target.join("SKILL.md").exists());
+        assert!(device.base.join("skills").join("demo-skill").join("SKILL.md").exists());
 
         // Undeploy removes the managed deployment, not the library copy.
         let remove = undeploy_payload(&manager, "codex", "demo-skill");
-        publish_command(&manager, &channel_url, &remove);
-        let third = run_signed_once(&device.store, &config).unwrap();
-        assert_eq!(third.executed, 1, "outcomes: {:?}", third.outcomes);
+        let removed = execute_undeploy(&device.store, &remove).unwrap();
+        assert_eq!(removed, target);
         assert!(!device.agent_root.join("demo-skill").exists());
         assert!(device.base.join("skills").join("demo-skill").join("SKILL.md").exists());
 
         central_repo::set_test_base_dir_override(None);
-        let _ = device._dir; // keep the fixture alive to the end
+        let _ = device._dir;
     }
 
     #[test]
@@ -679,11 +696,12 @@ mod tests {
         let device = device_fixture();
         central_repo::set_test_base_dir_override(Some(device.base.clone()));
         authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
-        let (channel_url, skill_url) = channel_and_source(manager._dir.path(), "rogue-skill");
+        let (channel_url, _unused) = channel_and_source(manager._dir.path(), "unused");
         pair(&device, &manager);
 
-        // The command names an agent this device never authorized.
-        let payload = deploy_payload(&manager, &skill_url, "other-agent", "rogue-skill");
+        // The command names an agent this device never authorized; the
+        // rejection happens before the skill source is ever contacted.
+        let payload = deploy_payload(&manager, "https://example.invalid/skills.git", "other-agent", "rogue-skill");
         publish_command(&manager, &channel_url, &payload);
 
         let config = SignedExecutorConfig::new(
@@ -691,7 +709,6 @@ mod tests {
         );
         let report = run_signed_once(&device.store, &config).unwrap();
         assert_eq!(report.rejected, 1, "outcomes: {:?}", report.outcomes);
-        assert!(!device.agent_root.join("rogue-skill").exists());
 
         let receipts = signed_channel::fetch_signed_receipts(&channel_url, BRANCH, TARGET_DEVICE).unwrap();
         assert_eq!(receipts.len(), 1);
