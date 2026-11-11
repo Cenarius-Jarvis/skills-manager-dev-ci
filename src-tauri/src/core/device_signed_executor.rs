@@ -708,6 +708,10 @@ mod tests {
         pair(&device, &manager);
 
         let payload = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
+        println!(
+            "fixture: pre-execute, source exists = {:?} for path = {skill_url}",
+            Path::new(&skill_url).exists()
+        );
         let target = execute_deploy(&device.store, &payload).unwrap();
         assert!(target.join("SKILL.md").exists());
         assert!(device.base.join("skills").join("demo-skill").join("SKILL.md").exists());
