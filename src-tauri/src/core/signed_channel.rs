@@ -246,6 +246,9 @@ pub fn publish_signed_command(
 
 /// Publish one signed receipt for this device. Receipt writes are idempotent
 /// (a retried run may re-publish the same receipt), unlike command writes.
+/// The envelope's device_id is the signing device's identity and may differ
+/// from the channel directory id a manager assigned to this machine; the
+/// manager verifies the signer against its paired device key.
 pub fn publish_signed_receipt(
     store: &SkillStore,
     url: &str,
@@ -254,9 +257,7 @@ pub fn publish_signed_receipt(
     message: &SignedChannelMessage,
 ) -> Result<String> {
     devices::validate_device_id(device_id)?;
-    if message.envelope.device_id != device_id {
-        bail!("receipt is not signed by this device");
-    }
+    devices::validate_device_id(&message.envelope.device_id)?;
     let (_tmp, dir) = devices::prepare_working_copy(url, branch)?;
     devices::ensure_protocol_file(&dir)?;
     let base = dir
