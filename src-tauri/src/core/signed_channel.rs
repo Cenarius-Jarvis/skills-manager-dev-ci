@@ -366,10 +366,8 @@ mod tests {
         // A command addressed to another device is refused even when the
         // signature is valid.
         let mut retargeted = message.clone();
-        retargeted.payload_json = retargeted.payload_json.replace(
-            &format!(""target_device":"dev-target"",),
-            ""target_device":"dev-other"",
-        );
+        retargeted.payload_json = retargeted.payload_json
+            .replace(r#""target_device":"dev-target""#, r#""target_device":"dev-other""#);
         assert!(verify_channel_command(
             &retargeted, &fx.pubkey, &fx.identity.device_id, "dev-other", 2000,
         ).is_err());
