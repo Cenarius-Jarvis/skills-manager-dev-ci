@@ -557,7 +557,7 @@ mod tests {
         let src = manager_dir.join("source");
         std::fs::create_dir_all(src.join(skill_name)).unwrap();
         std::fs::write(src.join(skill_name).join("SKILL.md"), format!("# {skill_name}\n")).unwrap();
-        git(&src, &["init"]);
+        git(&src, &["init", "-b", "main"]);
         println!(
             "fixture: after init, .git present = {:?}",
             src.join(".git").exists()
