@@ -554,9 +554,12 @@ mod tests {
         let channel = manager_dir.join("channel.git");
         let channel_arg = channel.to_string_lossy().to_string();
         git(&manager_dir.to_path_buf(), &["init", "--bare", channel_arg.as_str()]);
-        let src = manager_dir.join("source");
-        std::fs::create_dir_all(src.join(skill_name)).unwrap();
-        std::fs::write(src.join(skill_name).join("SKILL.md"), format!("# {skill_name}\n")).unwrap();
+        // The repository root is the skill directory itself — the signed
+        // command's skill_url must point at a repository, not a folder
+        // inside one.
+        let src = manager_dir.join("source").join(skill_name);
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("SKILL.md"), format!("# {skill_name}\n")).unwrap();
         git(&src, &["init", "-b", "main"]);
         println!(
             "fixture: after init, .git present = {:?}",
@@ -579,7 +582,7 @@ mod tests {
         println!("fixture: after commit, git log = {log:?}");
         // Forward slashes: a backslash drive path can be misread as scp
         // syntax by git when the tempdir carries a verbatim prefix.
-        let skill_url = src.join(skill_name).to_string_lossy().replace('\\', "/");
+        let skill_url = src.to_string_lossy().replace('\\', "/");
         (channel.to_string_lossy().to_string(), skill_url)
     }
 
@@ -708,10 +711,6 @@ mod tests {
         pair(&device, &manager);
 
         let payload = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
-        println!(
-            "fixture: pre-execute, source exists = {:?} for path = {skill_url}",
-            Path::new(&skill_url).exists()
-        );
         let target = execute_deploy(&device.store, &payload).unwrap();
         assert!(target.join("SKILL.md").exists());
         assert!(device.base.join("skills").join("demo-skill").join("SKILL.md").exists());
@@ -724,99 +723,6 @@ mod tests {
         assert!(device.base.join("skills").join("demo-skill").join("SKILL.md").exists());
 
         let _ = device._dir;
-    }
-
-    /// Environment diagnosis: clone a repository we know is valid (this
-    /// checkout), with and without the run_git environment, and dump any
-    /// global git configuration that could affect local clones.
-    #[test]
-    fn clone_environment_diagnostics() {
-        let cwd = std::env::current_dir().unwrap();
-        println!("diagnostics: cwd = {:?}", cwd);
-        let repo_root = cwd
-            .ancestors()
-            .find(|p| p.join(".git").exists())
-            .unwrap_or(cwd.as_path())
-            .to_path_buf();
-        println!("diagnostics: repo_root = {:?}", repo_root);
-
-        let config = std::process::Command::new("git")
-            .args(["config", "--list", "--show-origin", "--global"])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).to_string());
-        println!("diagnostics: global config = {config:?}");
-
-        let target = tempfile::tempdir().unwrap();
-        let plain = std::process::Command::new("git")
-            .args([
-                "clone",
-                repo_root.to_string_lossy().as_ref(),
-                target.path().join("plain").to_string_lossy().as_ref(),
-            ])
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .output()
-            .unwrap();
-        println!(
-            "diagnostics: plain clone status = {:?} err = {}",
-            plain.status,
-            String::from_utf8_lossy(&plain.stderr)
-        );
-
-        let with_creds = std::process::Command::new("git")
-            .args([
-                "clone",
-                repo_root.to_string_lossy().as_ref(),
-                target.path().join("creds").to_string_lossy().as_ref(),
-            ])
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_CONFIG_COUNT", "1")
-            .env("GIT_CONFIG_KEY_0", "credential.helper")
-            .env("GIT_CONFIG_VALUE_0", "/sentinel/credential-helper")
-            .output()
-            .unwrap();
-        println!(
-            "diagnostics: run_git-style clone status = {:?} err = {}",
-            with_creds.status,
-            String::from_utf8_lossy(&with_creds.stderr)
-        );
-
-        // Replicate the fixture flow exactly, then try to clone it the same
-        // way fetch_skill_source does.
-        let fixture_dir = tempfile::tempdir().unwrap();
-        let src = fixture_dir.path().join("source").join("demo-skill");
-        std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(src.join("SKILL.md"), "# demo\n").unwrap();
-        git(&src.parent().unwrap(), &["init", "-b", "main"]);
-        git(&src.parent().unwrap(), &["add", "-A"]);
-        git(&src.parent().unwrap(), &["commit", "-m", "skill"]);
-        let git_log = std::process::Command::new("git")
-            .args(["log", "--oneline"])
-            .current_dir(&src)
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).to_string());
-        let fixture_clone = std::process::Command::new("git")
-            .args([
-                "clone",
-                "--branch",
-                "main",
-                src.to_string_lossy().as_ref(),
-                target
-                    .path()
-                    .join("fixture")
-                    .to_string_lossy()
-                    .as_ref(),
-            ])
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .output()
-            .unwrap();
-        panic!(
-            "DIAGNOSTICS-DONE git_log={git_log:?} fixture_clone_status={:?} fixture_clone_err={} src_exists_after={:?} src_files={:?}",
-            fixture_clone.status,
-            String::from_utf8_lossy(&fixture_clone.stderr),
-            src.exists(),
-            std::fs::read_dir(src.parent().unwrap())
-                .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).collect::<Vec<_>>())
-        );
     }
 
     #[test]
