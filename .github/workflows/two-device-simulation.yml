@@ -2,6 +2,7 @@ name: Device identity pairing and signed inbox validation
 # Deliberately narrow trigger: only pushes to this branch that touch this
 # workflow file run CI. Code-only commits do not retrigger it — pair a
 # code fix with a small change to this file (like this comment) to run CI.
+# The test-build feature keeps preview installs out of the production data.
 on:
   push:
     branches: [codex/device-identity-pairing]
@@ -26,7 +27,16 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - name: Verify device identity signing and pairing approval
-        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib device_identity -- --test-threads=1
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked --manifest-path src-tauri/Cargo.toml --lib device_identity -- --test-threads=1 2>&1 | tee identity_test.log
+      - name: Surface identity test failures as annotations
+        if: failure()
+        shell: bash
+        run: |
+          LOG=$(tail -c 3000 identity_test.log | sed ':a;N;$!ba;s/\n/%0A/g')
+          echo "::error::identity test tail: $LOG"
       - name: Verify durable signed inbox and restart recovery
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib device_pairing -- --test-threads=1
       - name: Verify signed round trip, updates, and abrupt process termination

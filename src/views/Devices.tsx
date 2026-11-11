@@ -169,6 +169,182 @@ function ChannelSetupForm({ onSaved }: { onSaved: () => Promise<void> }) {
   );
 }
 
+/** Local signing identity + pairing import/export. Exporting hands out
+ * public material only; importing trusts a peer key only after the user
+ * compares fingerprints and presses approve. */
+function IdentityPairingCard() {
+  const { t } = useTranslation();
+  const [identity, setIdentity] = useState<api.DeviceIdentityStatus | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [exported, setExported] = useState<string | null>(null);
+  const [importText, setImportText] = useState("");
+  const [preview, setPreview] = useState<api.PairingPreview | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api.devicesIdentityGet()
+      .then(setIdentity)
+      .catch((err) => setLoadError(errorMessage(err)));
+  }, []);
+
+  const exportPairing = async () => {
+    setBusy(true);
+    try {
+      const manifest = await api.devicesPairingExport(["command", "receipt", "library_report"]);
+      const text = JSON.stringify(manifest, null, 2);
+      setExported(text);
+      try { await navigator.clipboard.writeText(text); } catch { /* manual copy still works */ }
+      toast.success(t("devices.pairingExported"));
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const checkImport = async () => {
+    setBusy(true);
+    setPreview(null);
+    try {
+      setPreview(await api.devicesPairingPreview(importText.trim()));
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const approveImport = async () => {
+    setBusy(true);
+    try {
+      const result = await api.devicesPairingApprove(importText.trim());
+      toast.success(t("devices.pairingApproved", { device: result.device_id }));
+      setPreview(null);
+      setImportText("");
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="app-panel p-4" data-testid="device-identity-card">
+      <h2 className="app-section-title">{t("devices.identityTitle")}</h2>
+      <p className="mb-3 text-[12px] text-muted">{t("devices.identityHint")}</p>
+      {loadError ? (
+        <p className="text-[13px] text-red-600 dark:text-red-400" data-testid="identity-error">
+          {loadError}
+        </p>
+      ) : !identity ? (
+        <div className="flex items-center gap-2 text-[13px] text-muted">
+          <Loader2 className="h-4 w-4 animate-spin" />
+        </div>
+      ) : (
+        <>
+          <div className="flex flex-wrap gap-x-6 gap-y-1 text-[12px]">
+            <span>
+              <span className="text-secondary">{t("devices.identityDeviceId")}: </span>
+              <span className="font-mono" data-testid="identity-device-id">{identity.device_id}</span>
+            </span>
+            <span>
+              <span className="text-secondary">{t("devices.identityKey")}: </span>
+              <span className="font-mono">{identity.key_id}</span>
+            </span>
+            <span>
+              <span className="text-secondary">{t("devices.identityFingerprint")}: </span>
+              <span className="font-mono tracking-widest" data-testid="identity-fingerprint">
+                {identity.fingerprint}
+              </span>
+            </span>
+          </div>
+
+          <div className="mt-3 flex flex-col gap-2">
+            <button
+              type="button"
+              className="app-button-secondary inline-flex h-8 items-center gap-2 self-start"
+              onClick={() => void exportPairing()}
+              disabled={busy}
+              data-testid="pairing-export"
+            >
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+              {t("devices.pairingExport")}
+            </button>
+            {exported && (
+              <>
+                <p className="text-[12px] text-muted">{t("devices.pairingExportHint")}</p>
+                <textarea
+                  className="app-input h-28 font-mono text-[11px]"
+                  readOnly
+                  value={exported}
+                  data-testid="pairing-export-text"
+                  onFocus={(e) => e.currentTarget.select()}
+                />
+              </>
+            )}
+          </div>
+
+          <div className="mt-4 border-t border-border-subtle pt-3">
+            <div className="text-[13px] font-medium">{t("devices.pairingImportTitle")}</div>
+            <textarea
+              className="app-input mt-2 h-20 font-mono text-[11px]"
+              value={importText}
+              onChange={(e) => setImportText(e.target.value)}
+              placeholder={t("devices.pairingImportPlaceholder")}
+              data-testid="pairing-import-text"
+            />
+            {!preview ? (
+              <button
+                type="button"
+                className="app-button-secondary mt-2 inline-flex h-8 items-center gap-2"
+                onClick={() => void checkImport()}
+                disabled={busy || !importText.trim()}
+                data-testid="pairing-check"
+              >
+                <CheckCircle2 className="h-4 w-4" />
+                {t("devices.pairingPreview")}
+              </button>
+            ) : (
+              <div className="mt-2 rounded-lg border border-border-subtle p-3" data-testid="pairing-preview">
+                <p className="text-[12px] text-muted">{t("devices.pairingPreviewIntro")}</p>
+                <p className="mt-1 font-mono text-[16px] font-semibold tracking-widest">
+                  {preview.fingerprint}
+                </p>
+                <p className="mt-1 text-[12px]">
+                  <span className="text-secondary">{t("devices.identityDeviceId")}: </span>
+                  <span className="font-mono">{preview.device_id}</span>
+                  <span className="text-secondary"> · {t("devices.pairingPurposes")}: </span>
+                  <span className="font-mono">{preview.purposes.join(", ")}</span>
+                </p>
+                <div className="mt-2 flex gap-2">
+                  <button
+                    type="button"
+                    className="app-button-primary inline-flex h-8 items-center gap-2"
+                    onClick={() => void approveImport()}
+                    disabled={busy}
+                    data-testid="pairing-approve"
+                  >
+                    <CheckCircle2 className="h-4 w-4" />
+                    {t("devices.pairingApprove")}
+                  </button>
+                  <button
+                    type="button"
+                    className="app-button-secondary inline-flex h-8 items-center"
+                    onClick={() => setPreview(null)}
+                    disabled={busy}
+                  >
+                    {t("devices.pairingCancel")}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function AddDeviceForm({ onAdded }: { onAdded: () => Promise<void> }) {
   const { t } = useTranslation();
   const [name, setName] = useState("");
@@ -416,6 +592,7 @@ export function Devices() {
 
       <RepositorySources devices={page?.devices ?? []} />
       <LocalInventoryPreview />
+      <IdentityPairingCard />
 
       {error && (
         <div

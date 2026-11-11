@@ -1,0 +1,27 @@
+{
+  "productName": "skills-manager-test",
+  "version": "1.43.3-test.1",
+  "identifier": "com.agentskills.desktop.test",
+  "app": {
+    "windows": [
+      {
+        "title": "Skills Manager (Test Build)",
+        "width": 1440,
+        "height": 860,
+        "minWidth": 1100,
+        "minHeight": 640,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "visible": false
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": false,
+    "targets": ["nsis"]
+  }
+}

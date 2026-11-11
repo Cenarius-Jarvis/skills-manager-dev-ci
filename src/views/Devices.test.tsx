@@ -65,6 +65,15 @@ const tauri = vi.hoisted(() => ({
   devicesGetPage: vi.fn(),
   devicesRefreshChannel: vi.fn(),
   devicesCreateInstruction: vi.fn(),
+  // Identity & pairing APIs used by the devices page card.
+  devicesIdentityGet: vi.fn().mockResolvedValue({
+    device_id: "dev-local",
+    key_id: "key-test",
+    fingerprint: "0000 0000 0000 0000",
+  }),
+  devicesPairingExport: vi.fn(),
+  devicesPairingPreview: vi.fn(),
+  devicesPairingApprove: vi.fn(),
 }));
 
 vi.mock("../lib/tauri", () => tauri);

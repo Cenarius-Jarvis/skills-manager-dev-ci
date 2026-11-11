@@ -12,6 +12,12 @@ default-run = "skills-manager"
 name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# Test builds relocate every data file to a suffixed directory (see
+# central_repo) so a preview install never touches the production store,
+# even when both run on the same machine.
+test-build = []
+
 [build-dependencies]
 tauri-build = { version = "2.5.4", features = [] }
 

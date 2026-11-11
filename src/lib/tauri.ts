@@ -1013,6 +1013,39 @@ export const devicesCreateInstruction = (args: {
   ttlSecs?: number;
 }) => invoke<DeviceInstructionRow>("devices_create_instruction", args);
 
+/** Local device signing identity and pairing. These APIs never publish
+ * anything and never authorize remote execution. */
+export interface DeviceIdentityStatus {
+  device_id: string;
+  key_id: string;
+  fingerprint: string;
+}
+export interface PairingManifest {
+  version: number;
+  device_id: string;
+  key_id: string;
+  public_key_hex: string;
+  fingerprint: string;
+  purposes: string[];
+  created_at: number;
+}
+export interface PairingPreview {
+  device_id: string;
+  key_id: string;
+  fingerprint: string;
+  purposes: string[];
+}
+export const devicesIdentityGet = () =>
+  invoke<DeviceIdentityStatus>("devices_identity_get");
+/** Message kinds this key can sign; values match the envelope protocol
+ * (command / receipt / library_report). */
+export const devicesPairingExport = (purposes: string[]) =>
+  invoke<PairingManifest>("devices_pairing_export", { purposes });
+export const devicesPairingPreview = (manifestJson: string) =>
+  invoke<PairingPreview>("devices_pairing_preview", { manifestJson });
+export const devicesPairingApprove = (manifestJson: string) =>
+  invoke<PairingPreview>("devices_pairing_approve", { manifestJson });
+
 
 /** Local-only read-only inventory; does not operate on remote devices. */
 export interface LocalInventory {
