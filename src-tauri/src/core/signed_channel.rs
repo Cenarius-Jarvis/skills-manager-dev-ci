@@ -192,17 +192,17 @@ pub fn encode_channel_file(message: &SignedChannelMessage) -> Result<Vec<u8>> {
 
 /// Decode and structurally check one channel file. This does not verify the
 /// signature — verification needs the locally paired key.
-pub fn decode_channel_file(bytes: &[u8]) -> Result<SignedChannelMessage> {
+pub fn decode_channel_file(bytes: &[u8], expected: MessageKind) -> Result<SignedChannelMessage> {
     if bytes.len() > MAX_CHANNEL_FILE_BYTES {
-        bail!("signed command file exceeds the size limit");
+        bail!("signed channel file exceeds the size limit");
     }
     let message: SignedChannelMessage = serde_json::from_slice(bytes)
-        .context("signed command file is not valid JSON")?;
+        .context("signed channel file is not valid JSON")?;
     if hex::decode(&message.signature).map(|s| s.len() == 64) != Ok(true) {
-        bail!("signed command signature is not 64 bytes of hex");
+        bail!("signed channel signature is not 64 bytes of hex");
     }
-    if message.envelope.kind != MessageKind::Command {
-        bail!("signed command file carries a non-command message");
+    if message.envelope.kind != expected {
+        bail!("signed channel file carries a different message kind");
     }
     Ok(message)
 }
@@ -294,7 +294,7 @@ pub fn fetch_signed_receipts(
     for entry in std::fs::read_dir(&base)? {
         let entry = entry?;
         let bytes = std::fs::read(entry.path())?;
-        messages.push(decode_channel_file(&bytes).with_context(|| {
+        messages.push(decode_channel_file(&bytes, MessageKind::Receipt).with_context(|| {
             format!(
                 "signed receipt file {}: invalid",
                 entry.path().file_name().unwrap_or_default().to_string_lossy()
@@ -336,7 +336,7 @@ pub fn fetch_signed_commands(
             bail!("unexpected non-file entry in signed-commands");
         }
         let bytes = std::fs::read(&path)?;
-        messages.push(decode_channel_file(&bytes).with_context(|| {
+        messages.push(decode_channel_file(&bytes, MessageKind::Command).with_context(|| {
             format!(
                 "signed command file {}: invalid",
                 path.file_name().unwrap_or_default().to_string_lossy()
