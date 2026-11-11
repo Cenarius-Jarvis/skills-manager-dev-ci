@@ -1,4 +1,7 @@
 name: Device identity pairing and signed inbox validation
+# Deliberately narrow trigger: only pushes to this branch that touch this
+# workflow file run CI. Code-only commits do not retrigger it — pair a
+# code fix with a small change to this file (like this comment) to run CI.
 on:
   push:
     branches: [codex/device-identity-pairing]
