@@ -1,9 +1,10 @@
-name: Windows test build (identity and pairing preview)
+name: Windows test build (identity and pairing preview, label 2)
 # Deliberately narrow trigger, same scheme as two-device-simulation.yml:
-# only pushes to this branch that touch this workflow file build. The
-# artifact is a clearly labeled TEST build compiled with the test-build
-# feature, so all its data lives in a suffixed directory and it never
-# touches the production store or replaces the production install.
+# only pushes to this branch that touch this workflow file build, so a
+# release is an explicit act — bump the build label below to cut a new
+# preview. The artifact is a clearly labeled TEST build compiled with the
+# test-build feature, so all its data lives in a suffixed directory and
+# it never touches the production store or replaces the production install.
 on:
   push:
     branches: [codex/device-identity-pairing]
