@@ -456,18 +456,27 @@ pub fn run_signed_once(store: &SkillStore, config: &SignedExecutorConfig) -> Res
             &message_id, status, reason.clone(), Some(&payload), target_path.clone(),
         );
         let signed_receipt = sign_receipt(&identity, &receipt, chrono::Utc::now().timestamp())?;
+        let mut receipt_error: Option<String> = None;
         match signed_channel::publish_signed_receipt(
             store, &config.url, &config.branch, &config.device_id, &signed_receipt,
         ) {
             Ok(_) => report.receipts_published += 1,
-            Err(err) => log::error!(
-                "receipt for {message_id} could not be published (execution result stands): {err:#}"
-            ),
+            Err(err) => {
+                log::error!(
+                    "receipt for {message_id} could not be published (execution result stands): {err:#}"
+                );
+                receipt_error = Some(format!("{err:#}"));
+            }
         }
         report.outcomes.push(CommandOutcome {
             message_id,
             status: status.to_string(),
-            detail: reason.unwrap_or_else(|| target_path.unwrap_or_default()),
+            detail: match (reason, receipt_error) {
+                (Some(r), Some(pe)) => format!("{r}; receipt unpublished: {pe}"),
+                (Some(r), None) => r,
+                (None, Some(pe)) => format!("receipt unpublished: {pe}"),
+                (None, None) => target_path.unwrap_or_default(),
+            },
         });
     }
     Ok(report)
@@ -694,6 +703,10 @@ mod tests {
         );
         let report = run_signed_once(&device.store, &config).unwrap();
         assert_eq!(report.failed, 1, "full report: {report:#?}");
+        assert_eq!(
+            report.receipts_published, 1,
+            "receipt push failed; full report: {report:#?}"
+        );
 
         let receipts = signed_channel::fetch_signed_receipts(&channel_url, BRANCH, TARGET_DEVICE).unwrap();
         assert_eq!(receipts.len(), 1);
