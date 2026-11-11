@@ -71,6 +71,21 @@ pub fn revoke_key(conn: &Connection, device_id: &str, key_id: &str, kind: Messag
     )? == 1)
 }
 
+/// The public key currently paired for one (device, key, purpose) slot, if
+/// any. Callers compare it against a manifest to decide whether re-pairing
+/// would replace existing key material.
+pub fn trusted_public_key(
+    conn: &Connection, device_id: &str, key_id: &str, kind: MessageKind,
+) -> Result<Option<(Vec<u8>, bool)>> {
+    let row = conn.query_row(
+        "SELECT public_key, active FROM device_trusted_keys_v1
+         WHERE device_id = ?1 AND key_id = ?2 AND purpose = ?3",
+        params![device_id, key_id, purpose(kind)],
+        |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, i64>(1)? == 1)),
+    ).optional()?;
+    Ok(row)
+}
+
 /// An owned copy of the exact envelope and payload that were verified and
 /// claimed. This is not authorization to execute; revalidate local approval
 /// and key revocation at the action boundary.

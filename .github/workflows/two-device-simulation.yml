@@ -1,7 +1,7 @@
-name: Signed inbox recovery inventory validation
+name: Device identity pairing and signed inbox validation
 on:
   push:
-    branches: [codex/inbox-recovery-inventory]
+    branches: [codex/device-identity-pairing]
     paths: ['.github/workflows/two-device-simulation.yml']
 permissions:
   contents: read
@@ -22,6 +22,8 @@ jobs:
       - name: Install Linux runner dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: Verify device identity signing and pairing approval
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib device_identity -- --test-threads=1
       - name: Verify durable signed inbox and restart recovery
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib device_pairing -- --test-threads=1
       - name: Verify signed round trip, updates, and abrupt process termination

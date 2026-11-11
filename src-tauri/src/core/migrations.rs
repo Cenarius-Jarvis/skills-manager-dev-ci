@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 
 /// Current schema version. Bump this when adding a new migration.
-const LATEST_VERSION: u32 = 11;
+const LATEST_VERSION: u32 = 12;
 
 /// Run all pending migrations on the database.
 ///
@@ -58,6 +58,7 @@ fn migrate_step(conn: &Connection, from_version: u32) -> Result<()> {
         8 => migrate_v8_to_v9(conn),
         9 => migrate_v9_to_v10(conn),
         10 => migrate_v10_to_v11(conn),
+        11 => migrate_v11_to_v12(conn),
         _ => bail!("unknown migration version: {from_version}"),
     }
 }
@@ -436,6 +437,14 @@ fn migrate_v10_to_v11(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// v11 → v12: Device trust ledger (paired public keys, verified message
+/// bindings/inbox, replay claims). Tables are created via the shared
+/// `initialize_trust_store` so the app and any CLI executor agree on the
+/// exact schema. Creating the tables does not pair any device.
+fn migrate_v11_to_v12(conn: &Connection) -> Result<()> {
+    super::device_pairing::initialize_trust_store(conn)
+}
+
 // ── Helpers ──
 
 fn add_column_if_missing(
@@ -806,5 +815,31 @@ mod tests {
             msg.contains("newer than this app supports"),
             "unexpected error: {msg}"
         );
+    }
+
+    #[test]
+    fn migrate_v12_creates_device_trust_tables() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA user_version = 11;").unwrap();
+        run_migrations(&conn).unwrap();
+        let version: u32 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, LATEST_VERSION);
+        for table in [
+            "device_trusted_keys_v1",
+            "verified_message_bindings_v1",
+            "verified_message_inbox_v1",
+            "verified_message_claims_v1",
+        ] {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    rusqlite::params![table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(exists, 1, "table {table} should exist after migration");
+        }
     }
 }

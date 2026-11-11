@@ -8,6 +8,8 @@ use std::time::Duration;
 use tauri::State;
 
 use crate::core::audit_log::AuditDraft;
+use crate::core::device_envelope::MessageKind;
+use crate::core::device_identity;
 use crate::core::devices::{self, DeviceInstruction, DeviceInstructionRow, DeviceManifest};
 use crate::core::error::AppError;
 use crate::core::skill_store::SkillStore;
@@ -417,6 +419,102 @@ pub async fn devices_create_instruction(
         )
     })
     .await?
+}
+
+// ── Device identity and pairing ──
+//
+// The identity is this machine's Ed25519 signing key; pairing imports a
+// peer's public key only after the user compares and approves fingerprints.
+// None of these commands publish anything or authorize any execution.
+
+#[derive(Debug, Serialize)]
+pub struct IdentityStatus {
+    pub device_id: String,
+    pub key_id: String,
+    pub fingerprint: String,
+}
+
+fn identity_status_internal(store: &SkillStore) -> Result<IdentityStatus, AppError> {
+    let identity = device_identity::ensure_identity(store).map_err(input_err)?;
+    Ok(IdentityStatus {
+        device_id: identity.device_id.clone(),
+        key_id: identity.key_id.clone(),
+        fingerprint: identity.fingerprint(),
+    })
+}
+
+#[tauri::command]
+pub async fn devices_identity_get(
+    store: State<'_, Arc<SkillStore>>,
+) -> Result<IdentityStatus, AppError> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || identity_status_internal(&store)).await?
+}
+
+fn pairing_manifest_internal(
+    store: &SkillStore,
+    purposes: Vec<MessageKind>,
+) -> Result<device_identity::PairingManifest, AppError> {
+    let identity = device_identity::ensure_identity(store).map_err(input_err)?;
+    device_identity::pairing_manifest(&identity, &purposes).map_err(input_err)
+}
+
+/// Export this machine's pairing manifest (public material only) for the
+/// requested message kinds. The caller hands it to the peer device out of
+/// band; nothing is sent anywhere by this command.
+#[tauri::command]
+pub async fn devices_pairing_export(
+    store: State<'_, Arc<SkillStore>>,
+    purposes: Vec<MessageKind>,
+) -> Result<device_identity::PairingManifest, AppError> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || pairing_manifest_internal(&store, purposes))
+        .await?
+}
+
+fn pairing_preview_internal(
+    manifest_json: &str,
+) -> Result<device_identity::PairingPreview, AppError> {
+    device_identity::preview_pairing_manifest(manifest_json).map_err(input_err)
+}
+
+/// Parse a peer's manifest and recompute its fingerprint for display. The
+/// user must compare this fingerprint with the sending device before calling
+/// `devices_pairing_approve`.
+#[tauri::command]
+pub async fn devices_pairing_preview(
+    manifest_json: String,
+) -> Result<device_identity::PairingPreview, AppError> {
+    tauri::async_runtime::spawn_blocking(move || pairing_preview_internal(&manifest_json)).await?
+}
+
+fn pairing_approve_internal(
+    store: &SkillStore,
+    manifest_json: &str,
+) -> Result<device_identity::PairingPreview, AppError> {
+    let preview = device_identity::approve_pairing_manifest(store, manifest_json)
+        .map_err(input_err)?;
+    store.log_audit(
+        AuditDraft::new("device.pairing.approve")
+            .ok()
+            .detail(format!(
+                "paired device {} key {} for {:?}",
+                preview.device_id, preview.key_id, preview.purposes
+            )),
+    );
+    Ok(preview)
+}
+
+/// Register an approved peer key in the local trust store. Idempotent for
+/// the same key; refuses to replace an existing key or revive a revoked one.
+#[tauri::command]
+pub async fn devices_pairing_approve(
+    store: State<'_, Arc<SkillStore>>,
+    manifest_json: String,
+) -> Result<device_identity::PairingPreview, AppError> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || pairing_approve_internal(&store, &manifest_json))
+        .await?
 }
 
 /// Inspect a single local agent directory without opening the store, writing

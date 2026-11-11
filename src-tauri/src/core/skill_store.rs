@@ -728,6 +728,15 @@ impl SkillStore {
         }
     }
 
+    /// Run a closure with the store's database connection. Device trust
+    /// tables live in this database and `device_pairing` functions take a
+    /// `&Connection`. The closure runs under the store's connection lock —
+    /// keep it short and never re-enter SkillStore methods from inside it.
+    pub fn with_conn<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+        let conn = self.conn.lock().unwrap();
+        f(&conn)
+    }
+
     /// Atomically update one device's non-secret library projection across
     /// concurrent GUI/CLI refreshes. Older reports must not win a read/write race.
     pub(crate) fn update_device_library_projection<F>(&self, device_id: &str, update: F) -> Result<()>

@@ -28,7 +28,7 @@ pub struct DeviceEnvelope {
 #[serde(rename_all = "snake_case")]
 pub enum MessageKind { Command, Receipt, LibraryReport }
 
-fn identifier(s: &str) -> bool {
+pub(crate) fn identifier(s: &str) -> bool {
     !s.is_empty() && s.len() <= 128
         && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
 }

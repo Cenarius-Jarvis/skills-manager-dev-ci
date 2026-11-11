@@ -1139,6 +1139,10 @@ pub fn run() {
             commands::devices::devices_add_device,
             commands::devices::devices_remove_device,
             commands::devices::devices_create_instruction,
+            commands::devices::devices_identity_get,
+            commands::devices::devices_pairing_export,
+            commands::devices::devices_pairing_preview,
+            commands::devices::devices_pairing_approve,
             // Presets
             commands::presets::get_presets,
             commands::presets::get_active_preset,
