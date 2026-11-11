@@ -779,6 +779,44 @@ mod tests {
             with_creds.status,
             String::from_utf8_lossy(&with_creds.stderr)
         );
+
+        // Replicate the fixture flow exactly, then try to clone it the same
+        // way fetch_skill_source does.
+        let fixture_dir = tempfile::tempdir().unwrap();
+        let src = fixture_dir.path().join("source").join("demo-skill");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("SKILL.md"), "# demo\n").unwrap();
+        git(&src.parent().unwrap(), &["init", "-b", "main"]);
+        git(&src.parent().unwrap(), &["add", "-A"]);
+        git(&src.parent().unwrap(), &["commit", "-m", "skill"]);
+        let git_log = std::process::Command::new("git")
+            .args(["log", "--oneline"])
+            .current_dir(&src)
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string());
+        let fixture_clone = std::process::Command::new("git")
+            .args([
+                "clone",
+                "--branch",
+                "main",
+                src.to_string_lossy().as_ref(),
+                target
+                    .path()
+                    .join("fixture")
+                    .to_string_lossy()
+                    .as_ref(),
+            ])
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .unwrap();
+        panic!(
+            "DIAGNOSTICS-DONE git_log={git_log:?} fixture_clone_status={:?} fixture_clone_err={} src_exists_after={:?} src_files={:?}",
+            fixture_clone.status,
+            String::from_utf8_lossy(&fixture_clone.stderr),
+            src.exists(),
+            std::fs::read_dir(src.parent().unwrap())
+                .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).collect::<Vec<_>>())
+        );
     }
 
     #[test]
