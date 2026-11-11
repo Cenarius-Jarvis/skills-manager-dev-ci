@@ -14,6 +14,7 @@ mod native_managed_executor;
 #[cfg(test)]
 mod two_device_simulation;
 pub mod device_inventory;
+pub mod device_signed_executor;
 pub mod devices;
 pub mod error;
 pub mod file_manager;

@@ -737,6 +737,13 @@ impl SkillStore {
         f(&conn)
     }
 
+    /// Mutable variant for the claim/preparation transactions in
+    /// `device_pairing`, which need `&mut Connection`.
+    pub fn with_conn_mut<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
+        let mut conn = self.conn.lock().unwrap();
+        f(&mut conn)
+    }
+
     /// Atomically update one device's non-secret library projection across
     /// concurrent GUI/CLI refreshes. Older reports must not win a read/write race.
     pub(crate) fn update_device_library_projection<F>(&self, device_id: &str, update: F) -> Result<()>

@@ -37,6 +37,11 @@ jobs:
         run: |
           set -o pipefail
           cargo test --locked --manifest-path src-tauri/Cargo.toml --lib signed_channel -- --test-threads=1 2>&1 | tee signed_channel_test.log
+      - name: Verify signed command execution and receipts
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked --manifest-path src-tauri/Cargo.toml --lib device_signed_executor -- --test-threads=1 2>&1 | tee signed_executor_test.log
       - name: Verify durable signed inbox and restart recovery
         shell: bash
         run: |
@@ -61,7 +66,7 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          for f in identity_test.log signed_channel_test.log pairing_test.log roundtrip_test.log nativedeploy_test.log executor_test.log; do
+          for f in identity_test.log signed_channel_test.log signed_executor_test.log pairing_test.log roundtrip_test.log nativedeploy_test.log executor_test.log; do
             [ -f "$f" ] || continue
             LOG=$(tail -c 2800 "$f" | sed ':a;N;$!ba;s/\n/%0A/g')
             echo "::error::$f tail: $LOG"

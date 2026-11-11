@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::{Context, anyhow, bail};
 use app_lib::commands::{presets as preset_cmd, skills as cmd, tools as tool_cmd};
 use app_lib::core::{
-    app_state, audit_log::AuditDraft, central_repo, device_executor, device_inventory, devices, error::AppError,
+    app_state, audit_log::AuditDraft, central_repo, device_executor, device_inventory, device_signed_executor, devices, error::AppError,
     git_backup, git_fetcher, installer, library_layers, merge, repo_lock::RepoLock, repository_sources,
     scenario_service, skill_metadata, skill_store::SkillStore, skillssh_api, sync_engine,
     sync_metadata, tool_adapters, tool_service, well_known,
@@ -891,6 +891,34 @@ enum DevicesCommand {
         #[arg(long)]
         dry_run: bool,
     },
+    /// One signed-command cycle: fetch commands addressed to this device,
+    /// verify them against the locally paired manager key, authorize the
+    /// agent locally, execute through the official install/deploy paths,
+    /// and publish a signed receipt.
+    RunSigned {
+        /// Control channel remote (https://, or a local path for testing).
+        #[arg(long)]
+        url: String,
+        /// Control channel branch.
+        #[arg(long)]
+        branch: Option<String>,
+        /// This device's id on the channel; defaults to this machine's id.
+        #[arg(long)]
+        device_id: Option<String>,
+    },
+    /// Bind an agent key to the only skills root signed commands may deploy
+    /// it to on this device. Absolute path required.
+    AuthorizeAgent {
+        #[arg(long)]
+        agent_key: String,
+        #[arg(long)]
+        root: PathBuf,
+    },
+    /// Print the authorized root for one agent key.
+    ShowAuthorization {
+        #[arg(long)]
+        agent_key: String,
+    },
 }
 
 #[derive(Serialize)]
@@ -946,6 +974,37 @@ fn run_devices(args: DevicesArgs, store: &SkillStore, json: bool) -> anyhow::Res
                 channel_branch: devices::channel_branch(store),
             };
             print_json(&report, json);
+            Ok(())
+        }
+        DevicesCommand::RunSigned { url, branch, device_id } => {
+            let device_id = match device_id {
+                Some(id) => id,
+                None => devices::local_device_id(store)?,
+            };
+            let config = device_signed_executor::SignedExecutorConfig::new(
+                url,
+                branch.unwrap_or_else(|| devices::DEFAULT_CHANNEL_BRANCH.to_string()),
+                device_id,
+            );
+            let report = device_signed_executor::run_signed_once(store, &config)?;
+            print_json(&report, json);
+            Ok(())
+        }
+        DevicesCommand::AuthorizeAgent { agent_key, root } => {
+            device_signed_executor::authorize_agent(store, &agent_key, &root)?;
+            eprintln!("authorized {} -> {}", agent_key, root.display());
+            Ok(())
+        }
+        DevicesCommand::ShowAuthorization { agent_key } => {
+            let root = device_signed_executor::authorized_agent_root(store, &agent_key)?;
+            print_json(
+                &serde_json::json!({
+                    "agent_key": agent_key,
+                    "authorized": root.is_some(),
+                    "root": root.map(|p| p.to_string_lossy().to_string()),
+                }),
+                json,
+            );
             Ok(())
         }
         DevicesCommand::RunOnce {

@@ -244,6 +244,74 @@ pub fn publish_signed_command(
     devices::commit_and_push(&dir, url, branch, &author, "devices: publish signed command")
 }
 
+/// Publish one signed receipt for this device. Receipt writes are idempotent
+/// (a retried run may re-publish the same receipt), unlike command writes.
+pub fn publish_signed_receipt(
+    store: &SkillStore,
+    url: &str,
+    branch: &str,
+    device_id: &str,
+    message: &SignedChannelMessage,
+) -> Result<String> {
+    devices::validate_device_id(device_id)?;
+    if message.envelope.device_id != device_id {
+        bail!("receipt is not signed by this device");
+    }
+    let (_tmp, dir) = devices::prepare_working_copy(url, branch)?;
+    devices::ensure_protocol_file(&dir)?;
+    let base = dir
+        .join(devices::device_dir_name(device_id)?)
+        .join("signed-receipts");
+    std::fs::create_dir_all(&base)?;
+    let path = base.join(format!("{}.json", message.envelope.message_id));
+    std::fs::write(&path, encode_channel_file(message)?)?;
+    let author = store
+        .get_setting(super::devices::SETTING_DEVICE_LOCAL_NAME)
+        .ok()
+        .flatten()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "Skills Manager".to_string());
+    devices::commit_and_push(&dir, url, branch, &author, "devices: publish signed receipt")
+}
+
+/// Read every signed receipt this device has published (manager side uses
+/// this to verify execution results against the paired device key).
+pub fn fetch_signed_receipts(
+    url: &str,
+    branch: &str,
+    device_id: &str,
+) -> Result<Vec<SignedChannelMessage>> {
+    devices::validate_device_id(device_id)?;
+    let (_tmp, dir) = devices::prepare_working_copy(url, branch)?;
+    let base = dir
+        .join(devices::device_dir_name(device_id)?)
+        .join("signed-receipts");
+    if !base.exists() {
+        return Ok(Vec::new());
+    }
+    let mut messages = Vec::new();
+    for entry in std::fs::read_dir(&base)? {
+        let entry = entry?;
+        let bytes = std::fs::read(entry.path())?;
+        messages.push(decode_channel_file(&bytes).with_context(|| {
+            format!(
+                "signed receipt file {}: invalid",
+                entry.path().file_name().unwrap_or_default().to_string_lossy()
+            )
+        })?);
+        if messages.len() > MAX_PENDING_COMMANDS_PER_DEVICE {
+            bail!("signed receipt store exceeds the per-device limit");
+        }
+    }
+    messages.sort_by(|a, b| {
+        a.envelope
+            .issued_at
+            .cmp(&b.envelope.issued_at)
+            .then_with(|| a.envelope.message_id.cmp(&b.envelope.message_id))
+    });
+    Ok(messages)
+}
+
 /// Read every signed command currently queued for one device. Bounds mirror
 /// the recovery inventory: an unbounded queue is an error, not a surprise.
 pub fn fetch_signed_commands(
