@@ -373,8 +373,26 @@ fn execute_undeploy(store: &SkillStore, payload: &SignedCommandPayload) -> Resul
     let meta = std::fs::symlink_metadata(&target)
         .context("managed deployment directory is missing")?;
     if meta.file_type().is_symlink() {
-        // A symlink deployment: remove the link only, never the library copy.
-        std::fs::remove_file(&target).context("removing the deployment link failed")?;
+        // A symlink deployment: remove the link only, never the library
+        // copy. Windows distinguishes directory links (remove_dir) from
+        // file links (remove_file); remove_file on a directory link fails
+        // with Access denied.
+        let link_points_to_dir = std::fs::metadata(&target)
+            .map(|resolved| resolved.is_dir())
+            .unwrap_or(false);
+        #[cfg(windows)]
+        {
+            if link_points_to_dir {
+                std::fs::remove_dir(&target).context("removing the deployment link failed")?;
+            } else {
+                std::fs::remove_file(&target).context("removing the deployment link failed")?;
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = link_points_to_dir;
+            std::fs::remove_file(&target).context("removing the deployment link failed")?;
+        }
     } else if meta.is_dir() {
         std::fs::remove_dir_all(&target).context("removing the deployment directory failed")?;
     } else {
