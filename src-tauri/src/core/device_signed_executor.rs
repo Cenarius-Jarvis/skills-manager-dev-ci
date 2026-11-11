@@ -426,12 +426,12 @@ pub fn run_signed_once(store: &SkillStore, config: &SignedExecutorConfig) -> Res
 
         // From here on the device owes a receipt whatever happens.
         let (status, reason, target_path): (&str, Option<String>, Option<String>) =
-            match signed_channel::validate_signed_command_payload(&payload)
-                .and_then(|_| match payload.action.as_str() {
-                    devices::ACTION_DEPLOY => execute_deploy(store, &payload).map(|path| (path)),
-                    devices::ACTION_UNDEPLOY => execute_undeploy(store, &payload).map(|path| (path)),
-                    other => bail!("unsupported action {other:?}"),
-                }) {
+                match signed_channel::validate_signed_command_payload(&payload)
+                    .and_then(|_| match payload.action.as_str() {
+                        devices::ACTION_DEPLOY => execute_deploy(store, &payload).map(|path| path),
+                        devices::ACTION_UNDEPLOY => execute_undeploy(store, &payload).map(|path| path),
+                        other => bail!("unsupported action {other:?}"),
+                    }) {
                 Ok(path) => (devices::TASK_STATE_SUCCESS, None, Some(path.to_string_lossy().to_string())),
                 Err(err) => {
                     let text = format!("{err:#}");
@@ -537,7 +537,8 @@ mod tests {
     /// Channel repo plus a local git repository holding one skill.
     fn channel_and_source(manager_dir: &Path, skill_name: &str) -> (String, String) {
         let channel = manager_dir.join("channel.git");
-        git(&manager_dir.to_path_buf(), &["init", "--bare", channel.to_string_lossy().as_str()]);
+        let channel_arg = channel.to_string_lossy().to_string();
+        git(&manager_dir.to_path_buf(), &["init", "--bare", channel_arg.as_str()]);
         let src = manager_dir.join("source");
         std::fs::create_dir_all(src.join(skill_name)).unwrap();
         std::fs::write(src.join(skill_name).join("SKILL.md"), format!("# {skill_name}\n")).unwrap();
@@ -626,7 +627,7 @@ mod tests {
     fn signed_command_runs_end_to_end_and_answers_with_a_signed_receipt() {
         let _guard = central_repo::test_base_dir_lock();
         let manager = manager_fixture();
-        let mut device = device_fixture();
+        let device = device_fixture();
         central_repo::set_test_base_dir_override(Some(device.base.clone()));
         authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
         let (channel_url, skill_url) = channel_and_source(manager._dir.path(), "demo-skill");
