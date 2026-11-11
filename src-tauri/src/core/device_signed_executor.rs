@@ -558,8 +558,25 @@ mod tests {
         std::fs::create_dir_all(src.join(skill_name)).unwrap();
         std::fs::write(src.join(skill_name).join("SKILL.md"), format!("# {skill_name}\n")).unwrap();
         git(&src, &["init"]);
+        println!(
+            "fixture: after init, .git present = {:?}",
+            src.join(".git").exists()
+        );
         git(&src, &["add", "-A"]);
         git(&src, &["commit", "-m", "skill"]);
+        let log = std::process::Command::new("git")
+            .args(["log", "--oneline"])
+            .current_dir(&src)
+            .output()
+            .map(|o| {
+                format!(
+                    "status={:?} out={} err={}",
+                    o.status,
+                    String::from_utf8_lossy(&o.stdout),
+                    String::from_utf8_lossy(&o.stderr)
+                )
+            });
+        println!("fixture: after commit, git log = {log:?}");
         // Forward slashes: a backslash drive path can be misread as scp
         // syntax by git when the tempdir carries a verbatim prefix.
         let skill_url = src.join(skill_name).to_string_lossy().replace('\\', "/");
