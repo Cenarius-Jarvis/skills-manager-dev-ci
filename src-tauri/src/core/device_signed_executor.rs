@@ -476,8 +476,8 @@ pub fn run_signed_once(store: &SkillStore, config: &SignedExecutorConfig) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::device_envelope;
-    use sha2::{Digest, Sha256};
+    use crate::core::{device_envelope, device_pairing};
+    use crate::core::signed_channel::SIGNED_COMMAND_SCHEMA;
 
     const BRANCH: &str = "skills-manager-devices";
     const TARGET_DEVICE: &str = "dev-e470c";
@@ -760,11 +760,5 @@ mod tests {
 
         central_repo::set_test_base_dir_override(None);
         let _ = device._dir;
-    }
-
-    // Silence the unused-import lint for the digest helper in release tests.
-    #[allow(dead_code)]
-    fn digest_of(bytes: &[u8]) -> String {
-        hex::encode(Sha256::digest(bytes))
     }
 }
