@@ -466,7 +466,7 @@ fn create_signed_instruction_internal(
     let now = chrono::Utc::now().timestamp();
     let ttl = ttl_secs.unwrap_or(signed_channel::DEFAULT_COMMAND_TTL_SECS);
     let message = signed_channel::create_signed_command(
-        store, &identity, device_id, &payload, now, ttl,
+        &identity, device_id, &payload, now, ttl,
     )
     .map_err(input_err)?;
 

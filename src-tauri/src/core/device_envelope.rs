@@ -24,7 +24,7 @@ pub fn max_lifetime(kind: MessageKind) -> i64 {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceEnvelope {
     pub version: u8,

@@ -100,7 +100,6 @@ pub fn validate_signed_command_payload(payload: &SignedCommandPayload) -> Result
 /// Sign one command payload with this machine's identity. The command id is
 /// the envelope's message id and stays stable across channel round trips.
 pub fn create_signed_command(
-    store: &SkillStore,
     identity: &DeviceIdentity,
     target_device_id: &str,
     payload: &SignedCommandPayload,
@@ -115,7 +114,7 @@ pub fn create_signed_command(
     let payload_json = serde_json::to_string(payload)?;
     let signed = identity.sign_message(
         MessageKind::Command,
-        payload_json.into_bytes(),
+        payload_json.clone().into_bytes(),
         now,
         ttl_secs,
     )?;
@@ -307,7 +306,7 @@ mod tests {
     fn signed_command_round_trips_through_verify() {
         let fx = fixture();
         let message = create_signed_command(
-            &fx.store, &fx.identity, "dev-target", &payload(&fx.identity.device_id),
+            &fx.identity, "dev-target", &payload(&fx.identity.device_id),
             1000, DEFAULT_COMMAND_TTL_SECS,
         ).unwrap();
         assert!(message.envelope.message_id.starts_with("cmd-"));
@@ -320,7 +319,7 @@ mod tests {
     fn signed_command_rejects_tampering() {
         let fx = fixture();
         let message = create_signed_command(
-            &fx.store, &fx.identity, "dev-target", &payload(&fx.identity.device_id),
+            &fx.identity, "dev-target", &payload(&fx.identity.device_id),
             1000, DEFAULT_COMMAND_TTL_SECS,
         ).unwrap();
 
@@ -381,7 +380,7 @@ mod tests {
     fn signed_command_ttl_is_bounded_by_the_command_limit() {
         let fx = fixture();
         let message = create_signed_command(
-            &fx.store, &fx.identity, "dev-target", &payload(&fx.identity.device_id),
+            &fx.identity, "dev-target", &payload(&fx.identity.device_id),
             1000, 10_000_000,
         ).unwrap();
         assert_eq!(
@@ -408,7 +407,7 @@ mod tests {
         let branch = "skills-manager-devices";
 
         let message = create_signed_command(
-            &fx.store, &fx.identity, "dev-target", &payload(&fx.identity.device_id),
+            &fx.identity, "dev-target", &payload(&fx.identity.device_id),
             1000, DEFAULT_COMMAND_TTL_SECS,
         ).unwrap();
         publish_signed_command(&fx.store, &url, branch, "dev-target", &message).unwrap();
