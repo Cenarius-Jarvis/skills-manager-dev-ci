@@ -592,9 +592,19 @@ fn run_git(dir: Option<&Path>, creds_for_url: Option<&str>, args: &[&str]) -> Re
         .with_context(|| format!("failed to run git {}", args.first().unwrap_or(&"")))?;
     if !output.status.success() {
         // Git can echo userinfo, query tokens and credential-helper output.
-        // Do not surface arguments or stderr to UI/logs on failure.
+        // Do not surface arguments or stderr to UI/logs on failure. Tests
+        // get a sanitized stderr tail instead, so fixture failures are
+        // diagnosable without weakening production error messages.
+        #[cfg(test)]
+        let detail = {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let flat: String = stderr.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+            format!("; git said: {}", &flat[..flat.len().min(240)])
+        };
+        #[cfg(not(test))]
+        let detail = String::new();
         bail!(
-            "git {} failed ({}); check repository access, branch and network",
+            "git {} failed ({}); check repository access, branch and network{detail}",
             args.first().unwrap_or(&"operation"),
             output.status
         );

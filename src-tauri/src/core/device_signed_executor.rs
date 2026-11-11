@@ -560,7 +560,10 @@ mod tests {
         git(&src, &["init"]);
         git(&src, &["add", "-A"]);
         git(&src, &["commit", "-m", "skill"]);
-        (channel.to_string_lossy().to_string(), src.join(skill_name).to_string_lossy().to_string())
+        // Forward slashes: a backslash drive path can be misread as scp
+        // syntax by git when the tempdir carries a verbatim prefix.
+        let skill_url = src.join(skill_name).to_string_lossy().replace('\\', "/");
+        (channel.to_string_lossy().to_string(), skill_url)
     }
 
     /// Pair the device with the manager: the device trusts the manager's
