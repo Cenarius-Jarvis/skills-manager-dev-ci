@@ -515,6 +515,21 @@ mod tests {
         );
     }
 
+    /// Panic-safe: restores the global base-dir override even when a test
+    /// fails midway, so one broken test cannot poison the rest of the run.
+    struct OverrideGuard;
+    impl OverrideGuard {
+        fn set(base: &Path) -> Self {
+            central_repo::set_test_base_dir_override(Some(base.to_path_buf()));
+            OverrideGuard
+        }
+    }
+    impl Drop for OverrideGuard {
+        fn drop(&mut self) {
+            central_repo::set_test_base_dir_override(None);
+        }
+    }
+
     fn manager_fixture() -> Manager {
         let dir = tempfile::tempdir().unwrap();
         let store = SkillStore::new(&dir.path().join("manager.db")).unwrap();
@@ -628,7 +643,7 @@ mod tests {
         let _guard = central_repo::test_base_dir_lock();
         let manager = manager_fixture();
         let device = device_fixture();
-        central_repo::set_test_base_dir_override(Some(device.base.clone()));
+        let _override = OverrideGuard::set(&device.base);
         authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
         // A legal https URL that cannot be cloned: the full cycle is
         // exercised without any network dependency, and the device must
@@ -643,7 +658,7 @@ mod tests {
             channel_url.clone(), BRANCH.to_string(), TARGET_DEVICE.to_string(),
         );
         let report = run_signed_once(&device.store, &config).unwrap();
-        assert_eq!(report.failed, 1, "outcomes: {:?}", report.outcomes);
+        assert_eq!(report.failed, 1, "full report: {report:#?}");
 
         let receipts = signed_channel::fetch_signed_receipts(&channel_url, BRANCH, TARGET_DEVICE).unwrap();
         assert_eq!(receipts.len(), 1);
@@ -656,7 +671,6 @@ mod tests {
         assert_eq!(second.failed, 0);
         assert_eq!(second.skipped, 1);
 
-        central_repo::set_test_base_dir_override(None);
         let _ = device._dir; // keep the fixture alive to the end
     }
 
@@ -668,7 +682,7 @@ mod tests {
         let _guard = central_repo::test_base_dir_lock();
         let manager = manager_fixture();
         let device = device_fixture();
-        central_repo::set_test_base_dir_override(Some(device.base.clone()));
+        let _override = OverrideGuard::set(&device.base);
         authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
         let (_channel_url, skill_url) = channel_and_source(manager._dir.path(), "demo-skill");
         pair(&device, &manager);
@@ -685,7 +699,6 @@ mod tests {
         assert!(!device.agent_root.join("demo-skill").exists());
         assert!(device.base.join("skills").join("demo-skill").join("SKILL.md").exists());
 
-        central_repo::set_test_base_dir_override(None);
         let _ = device._dir;
     }
 
@@ -694,7 +707,7 @@ mod tests {
         let _guard = central_repo::test_base_dir_lock();
         let manager = manager_fixture();
         let device = device_fixture();
-        central_repo::set_test_base_dir_override(Some(device.base.clone()));
+        let _override = OverrideGuard::set(&device.base);
         authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
         let (channel_url, _unused) = channel_and_source(manager._dir.path(), "unused");
         pair(&device, &manager);
@@ -716,7 +729,6 @@ mod tests {
         assert_eq!(receipt.status, RECEIPT_STATUS_REJECTED);
         assert!(receipt.reason.as_deref().unwrap_or("").contains("not authorized"));
 
-        central_repo::set_test_base_dir_override(None);
         let _ = device._dir;
     }
 
@@ -725,7 +737,7 @@ mod tests {
         let _guard = central_repo::test_base_dir_lock();
         let manager = manager_fixture();
         let device = device_fixture();
-        central_repo::set_test_base_dir_override(Some(device.base.clone()));
+        let _override = OverrideGuard::set(&device.base);
         authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
         let (channel_url, _skill_url) = channel_and_source(manager._dir.path(), "demo-skill");
         pair(&device, &manager);
@@ -749,7 +761,6 @@ mod tests {
             "the local copy must survive"
         );
 
-        central_repo::set_test_base_dir_override(None);
         let _ = device._dir;
     }
 
@@ -758,7 +769,7 @@ mod tests {
         let _guard = central_repo::test_base_dir_lock();
         let manager = manager_fixture();
         let device = device_fixture();
-        central_repo::set_test_base_dir_override(Some(device.base.clone()));
+        let _override = OverrideGuard::set(&device.base);
         authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
         let (channel_url, skill_url) = channel_and_source(manager._dir.path(), "demo-skill");
         // No pairing: the device does not know this manager.
@@ -775,7 +786,6 @@ mod tests {
         let receipts = signed_channel::fetch_signed_receipts(&channel_url, BRANCH, TARGET_DEVICE).unwrap();
         assert!(receipts.is_empty(), "no receipt without a verified command");
 
-        central_repo::set_test_base_dir_override(None);
         let _ = device._dir;
     }
 }
