@@ -23,6 +23,7 @@ use super::skill_store::SkillStore;
 
 /// Keyring service for the local device identity. The account key is the
 /// local device id, so two identities never share an entry.
+#[cfg_attr(test, allow(dead_code))]
 const KEYRING_SERVICE: &str = "skills-manager-device-identity";
 
 #[derive(Serialize, Deserialize)]
@@ -486,7 +487,7 @@ mod tests {
         );
         // Commands may live for days: an offline device reads them later.
         let cmd = identity
-            .sign_message(MessageKind::Command, b"x".to_vec(), 1000, 100_000)
+            .sign_message(MessageKind::Command, b"x".to_vec(), 1000, 10_000_000)
             .unwrap();
         assert_eq!(
             cmd.envelope.expires_at - cmd.envelope.issued_at,
