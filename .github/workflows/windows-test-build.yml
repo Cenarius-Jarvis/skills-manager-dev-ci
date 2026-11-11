@@ -1,4 +1,4 @@
-name: Windows test build (identity and pairing preview, label 2)
+name: Windows test build (signed commands end to end, label 3)
 # Deliberately narrow trigger, same scheme as two-device-simulation.yml:
 # only pushes to this branch that touch this workflow file build, so a
 # release is an explicit act — bump the build label below to cut a new
