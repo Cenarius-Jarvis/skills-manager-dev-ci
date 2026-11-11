@@ -680,6 +680,18 @@ mod tests {
         let config = SignedExecutorConfig::new(
             channel_url.clone(), BRANCH.to_string(), TARGET_DEVICE.to_string(),
         );
+        let trusted = device.store.with_conn(|conn| {
+            device_pairing::trusted_public_key(
+                conn, &manager.identity.device_id, &manager.identity.key_id, MessageKind::Command,
+            )
+        }).unwrap();
+        println!(
+            "cycle: trusted={:?} payload_valid={:?} envelope_device={:?} envelope_key={:?}",
+            trusted.as_ref().map(|(_, active)| active),
+            signed_channel::validate_signed_command_payload(&payload).is_ok(),
+            payload.issued_by,
+            manager.identity.key_id,
+        );
         let report = run_signed_once(&device.store, &config).unwrap();
         assert_eq!(report.failed, 1, "full report: {report:#?}");
 
@@ -744,7 +756,7 @@ mod tests {
             channel_url.clone(), BRANCH.to_string(), TARGET_DEVICE.to_string(),
         );
         let report = run_signed_once(&device.store, &config).unwrap();
-        assert_eq!(report.rejected, 1, "outcomes: {:?}", report.outcomes);
+        assert_eq!(report.rejected, 1, "full report: {report:#?}");
 
         let receipts = signed_channel::fetch_signed_receipts(&channel_url, BRANCH, TARGET_DEVICE).unwrap();
         assert_eq!(receipts.len(), 1);
@@ -777,7 +789,7 @@ mod tests {
             channel_url.clone(), BRANCH.to_string(), TARGET_DEVICE.to_string(),
         );
         let report = run_signed_once(&device.store, &config).unwrap();
-        assert_eq!(report.rejected, 1, "outcomes: {:?}", report.outcomes);
+        assert_eq!(report.rejected, 1, "full report: {report:#?}");
         assert_eq!(
             std::fs::read_to_string(existing.join("SKILL.md")).unwrap(),
             "# local edits",
