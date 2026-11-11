@@ -11,6 +11,19 @@ const DOMAIN: &[u8] = b"skills-manager/device-envelope/v1\0";
 const MAX_PAYLOAD: usize = 1024 * 1024;
 const MAX_LIFETIME: i64 = 900;
 
+/// Upper bound on an envelope's validity window, per message kind. Commands
+/// are consumed asynchronously — a device may come online days after the
+/// operator publishes — so they may live for days. Receipts and library
+/// reports are produced and consumed in one short session. Replay protection
+/// never relies on this window: the durable claim ledger rejects any
+/// message id a second time, whatever its lifetime.
+pub fn max_lifetime(kind: MessageKind) -> i64 {
+    match kind {
+        MessageKind::Command => 7 * 24 * 3600,
+        MessageKind::Receipt | MessageKind::LibraryReport => MAX_LIFETIME,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceEnvelope {
@@ -59,7 +72,7 @@ pub fn verify_envelope(
     { bail!("invalid signed envelope"); }
     let lifetime = envelope.expires_at.checked_sub(envelope.issued_at)
         .ok_or_else(|| anyhow::anyhow!("invalid signed envelope lifetime"))?;
-    if envelope.issued_at <= 0 || lifetime <= 0 || lifetime > MAX_LIFETIME
+    if envelope.issued_at <= 0 || lifetime <= 0 || lifetime > max_lifetime(envelope.kind)
         || now < envelope.issued_at || now >= envelope.expires_at
     { bail!("signed envelope is outside its validity window"); }
     let payload_hash = hex::encode(Sha256::digest(payload));

@@ -288,7 +288,7 @@
     "devicePlatformLabel": "平台（可选）",
     "addDevice": "添加设备",
     "instructTitle": "下发部署请求",
-    "instructHint": "远程部署暂不可用：当前版本不会发布未签名指令。设备配对与签名功能仍在开发。",
+    "instructHint": "请求将使用本机身份签名并发布到已配置的设备通道。目标设备只有验证签名并通过本机检查后才会执行。请先在上方配置设备通道。",
     "actionLabel": "动作",
     "skillUrlLabel": "技能仓库地址",
     "skillBranchLabel": "分支（可选）",

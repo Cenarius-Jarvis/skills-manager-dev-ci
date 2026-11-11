@@ -38,6 +38,7 @@ pub mod repo_lock;
 pub mod repository_sources;
 pub mod scanner;
 pub mod scenario_service;
+pub mod signed_channel;
 pub mod skill_auto_updater;
 pub mod skill_metadata;
 pub mod skill_store;

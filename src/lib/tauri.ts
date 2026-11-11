@@ -1013,6 +1013,20 @@ export const devicesCreateInstruction = (args: {
   ttlSecs?: number;
 }) => invoke<DeviceInstructionRow>("devices_create_instruction", args);
 
+/** Signed instruction publication: the command is signed with this
+ * machine's identity and pushed to the configured channel. Publishing is
+ * not executing — the target device verifies and authorizes locally. */
+export const devicesCreateSignedInstruction = (args: {
+  deviceId: string;
+  action: string;
+  skillUrl?: string;
+  skillBranch?: string;
+  skillSubpath?: string;
+  skillName?: string;
+  agentKey: string;
+  ttlSecs?: number;
+}) => invoke<DeviceInstructionRow>("devices_create_signed_instruction", args);
+
 /** Local device signing identity and pairing. These APIs never publish
  * anything and never authorize remote execution. */
 export interface DeviceIdentityStatus {

@@ -11,6 +11,7 @@ use crate::core::audit_log::AuditDraft;
 use crate::core::device_envelope::MessageKind;
 use crate::core::device_identity;
 use crate::core::devices::{self, DeviceInstruction, DeviceInstructionRow, DeviceManifest};
+use crate::core::signed_channel;
 use crate::core::error::AppError;
 use crate::core::skill_store::SkillStore;
 
@@ -407,6 +408,129 @@ pub async fn devices_create_instruction(
     let store = store.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         create_instruction_internal(
+            &store,
+            &device_id,
+            &action,
+            skill_url.as_deref(),
+            skill_branch.as_deref(),
+            skill_subpath.as_deref(),
+            skill_name.as_deref(),
+            &agent_key,
+            ttl_secs,
+        )
+    })
+    .await?
+}
+
+// ── Signed instruction publication ──
+//
+// The instruction is signed with this machine's identity and published to
+// the configured channel. Publication is not execution: the target device
+// verifies the signature against its locally paired key, claims the message
+// id against replay, and runs its own authorization before any effect. The
+// legacy unsigned path above stays disabled.
+
+#[allow(clippy::too_many_arguments)]
+fn create_signed_instruction_internal(
+    store: &SkillStore,
+    device_id: &str,
+    action: &str,
+    skill_url: Option<&str>,
+    skill_branch: Option<&str>,
+    skill_subpath: Option<&str>,
+    skill_name: Option<&str>,
+    agent_key: &str,
+    ttl_secs: Option<i64>,
+) -> Result<DeviceInstructionRow, AppError> {
+    let url = devices::channel_url(store).ok_or_else(|| {
+        AppError::invalid_input("configure the device channel before publishing instructions")
+    })?;
+    let branch = devices::channel_branch(store);
+    let identity = device_identity::ensure_identity(store).map_err(input_err)?;
+    let trim = |value: Option<&str>| {
+        value
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    let payload = signed_channel::SignedCommandPayload {
+        schema: signed_channel::SIGNED_COMMAND_SCHEMA,
+        action: action.trim().to_string(),
+        skill_url: trim(skill_url),
+        skill_branch: trim(skill_branch),
+        skill_subpath: trim(skill_subpath),
+        skill_name: trim(skill_name),
+        agent_key: agent_key.trim().to_string(),
+        issued_by: identity.device_id.clone(),
+        issued_by_name: Some(devices::local_device_name(store)),
+    };
+    let now = chrono::Utc::now().timestamp();
+    let ttl = ttl_secs.unwrap_or(signed_channel::DEFAULT_COMMAND_TTL_SECS);
+    let message = signed_channel::create_signed_command(
+        store, &identity, device_id, &payload, now, ttl,
+    )
+    .map_err(input_err)?;
+
+    // Record locally first so a failed push leaves an auditable pending
+    // instruction instead of a silently dropped one.
+    let mut row = DeviceInstructionRow {
+        id: message.envelope.message_id.clone(),
+        device_id: device_id.to_string(),
+        action: payload.action.clone(),
+        skill_url: payload.skill_url.clone(),
+        skill_branch: payload.skill_branch.clone(),
+        skill_subpath: payload.skill_subpath.clone(),
+        skill_name: payload.skill_name.clone(),
+        agent_key: payload.agent_key.clone(),
+        created_at: message.envelope.issued_at,
+        expires_at: Some(message.envelope.expires_at),
+        created_by: Some(identity.device_id.clone()),
+        instruction_commit: None,
+        receipt_commit: None,
+        state: devices::TASK_STATE_PENDING.to_string(),
+        receipt_status: None,
+        receipt_reason: None,
+        receipt_detail: None,
+        receipt_at: None,
+        executor_version: None,
+    };
+    store.upsert_device_instruction(&row).map_err(AppError::db)?;
+    let commit = with_retry(|| {
+        signed_channel::publish_signed_command(store, &url, &branch, device_id, &message)
+    })
+    .map_err(git_err)?;
+    row.instruction_commit = Some(commit.clone());
+    store.upsert_device_instruction(&row).map_err(AppError::db)?;
+    store.log_audit(
+        AuditDraft::new("device.instruction.signed_publish")
+            .ok()
+            .detail(format!(
+                "signed command {} ({}/{}) published to device {} at commit {}",
+                message.envelope.message_id,
+                payload.action,
+                payload.agent_key,
+                device_id,
+                &commit[..commit.len().min(12)]
+            )),
+    );
+    Ok(row)
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn devices_create_signed_instruction(
+    store: State<'_, Arc<SkillStore>>,
+    device_id: String,
+    action: String,
+    skill_url: Option<String>,
+    skill_branch: Option<String>,
+    skill_subpath: Option<String>,
+    skill_name: Option<String>,
+    agent_key: String,
+    ttl_secs: Option<i64>,
+) -> Result<DeviceInstructionRow, AppError> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        create_signed_instruction_internal(
             &store,
             &device_id,
             &action,

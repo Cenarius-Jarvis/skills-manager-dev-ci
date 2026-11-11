@@ -25,9 +25,6 @@ use super::skill_store::SkillStore;
 /// local device id, so two identities never share an entry.
 const KEYRING_SERVICE: &str = "skills-manager-device-identity";
 
-/// Maximum envelope lifetime, mirroring device_envelope's protocol limit.
-const MAX_LIFETIME_SECS: i64 = 900;
-
 #[derive(Serialize, Deserialize)]
 struct StoredIdentity {
     version: u8,
@@ -212,7 +209,7 @@ impl DeviceIdentity {
         if payload.len() > 1024 * 1024 {
             bail!("message payload exceeds the protocol size limit");
         }
-        let ttl = ttl_secs.clamp(1, MAX_LIFETIME_SECS);
+        let ttl = ttl_secs.clamp(1, device_envelope::max_lifetime(kind));
         let prefix = match kind {
             MessageKind::Command => "cmd",
             MessageKind::Receipt => "rcp",
@@ -483,7 +480,20 @@ mod tests {
             .sign_message(MessageKind::Receipt, b"x".to_vec(), 1000, 100_000)
             .unwrap();
         assert!(long.envelope.message_id.starts_with("rcp-"));
-        assert_eq!(long.envelope.expires_at - long.envelope.issued_at, MAX_LIFETIME_SECS);
+        assert_eq!(
+            long.envelope.expires_at - long.envelope.issued_at,
+            device_envelope::max_lifetime(MessageKind::Receipt)
+        );
+        // Commands may live for days: an offline device reads them later.
+        let cmd = identity
+            .sign_message(MessageKind::Command, b"x".to_vec(), 1000, 100_000)
+            .unwrap();
+        assert_eq!(
+            cmd.envelope.expires_at - cmd.envelope.issued_at,
+            device_envelope::max_lifetime(MessageKind::Command)
+        );
+        assert!(device_envelope::max_lifetime(MessageKind::Command)
+            > device_envelope::max_lifetime(MessageKind::Receipt));
     }
 
     #[test]

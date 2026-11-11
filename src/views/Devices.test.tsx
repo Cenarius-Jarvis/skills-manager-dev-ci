@@ -65,6 +65,7 @@ const tauri = vi.hoisted(() => ({
   devicesGetPage: vi.fn(),
   devicesRefreshChannel: vi.fn(),
   devicesCreateInstruction: vi.fn(),
+  devicesCreateSignedInstruction: vi.fn(),
   // Identity & pairing APIs used by the devices page card.
   devicesIdentityGet: vi.fn().mockResolvedValue({
     device_id: "dev-local",
@@ -97,15 +98,30 @@ afterEach(async () => {
 });
 
 describe("Devices page", () => {
-  it("explains and blocks unavailable unsigned instruction publishing", async () => {
+  it("publishes instruction requests through the signed API, never the unsigned one", async () => {
     tauri.devicesGetPage.mockResolvedValue(pageFixture);
+    tauri.devicesCreateSignedInstruction.mockResolvedValue(pageFixture.instructions[0]);
     await act(async () => root.render(<Devices />));
     const button = container.querySelector<HTMLButtonElement>('[data-testid="instruct-submit-dev-1"]');
     const hint = container.querySelector<HTMLElement>('#instruct-hint-dev-1');
-    expect(button?.disabled).toBe(true);
+    expect(button?.disabled).toBe(false);
     expect(button?.getAttribute("aria-describedby")).toBe(hint?.id);
     expect(hint?.textContent).toContain("devices.instructHint");
+    const agentInput = container.querySelector<HTMLInputElement>('[data-testid="instruct-agent-dev-1"]');
+    // React tracks `value` on the element itself, so go through the native
+    // setter or its onChange never fires in jsdom.
+    const setValue = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype, "value",
+    )!.set!;
+    await act(async () => {
+      setValue.call(agentInput, "openclaw");
+      agentInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
     await act(async () => { button?.click(); });
+    expect(tauri.devicesCreateSignedInstruction).toHaveBeenCalledWith(
+      expect.objectContaining({ deviceId: "dev-1", action: "deploy", agentKey: "openclaw" }),
+    );
+    // The legacy unsigned publication path must stay unused by the UI.
     expect(tauri.devicesCreateInstruction).not.toHaveBeenCalled();
   });
 

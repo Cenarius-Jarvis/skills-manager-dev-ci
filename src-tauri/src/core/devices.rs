@@ -605,7 +605,7 @@ fn run_git(dir: Option<&Path>, creds_for_url: Option<&str>, args: &[&str]) -> Re
 /// A short-lived working copy of the channel branch. Everything is cloned,
 /// edited and pushed within one call, so a crash never leaves state behind —
 /// channels are a few JSON files, a full clone is cheap.
-fn prepare_working_copy(url: &str, branch: &str) -> Result<(tempfile::TempDir, PathBuf)> {
+pub(crate) fn prepare_working_copy(url: &str, branch: &str) -> Result<(tempfile::TempDir, PathBuf)> {
     let tmp = tempfile::tempdir().context("failed to create temp dir for device channel")?;
     let dir = tmp.path().to_path_buf();
     let clone_ok = run_git(
@@ -680,7 +680,7 @@ fn channel_path_is_link(meta: &std::fs::Metadata) -> bool {
     }
 }
 
-fn commit_and_push(dir: &Path, url: &str, branch: &str, author: &str, message: &str) -> Result<String> {
+pub(crate) fn commit_and_push(dir: &Path, url: &str, branch: &str, author: &str, message: &str) -> Result<String> {
     run_git(Some(dir), None, &["add", "-A"])?;
     let staged = run_git(Some(dir), None, &["status", "--porcelain"])?;
     if !staged.trim().is_empty() {
@@ -702,7 +702,7 @@ fn commit_and_push(dir: &Path, url: &str, branch: &str, author: &str, message: &
     Ok(run_git(Some(dir), None, &["rev-parse", "HEAD"])?.trim().to_string())
 }
 
-fn ensure_protocol_file(dir: &Path) -> Result<()> {
+pub(crate) fn ensure_protocol_file(dir: &Path) -> Result<()> {
     let path = dir.join("protocol.json");
     if !path.exists() {
         std::fs::write(
@@ -714,7 +714,7 @@ fn ensure_protocol_file(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn device_dir_name(device_id: &str) -> Result<String> {
+pub(crate) fn device_dir_name(device_id: &str) -> Result<String> {
     validate_device_id(device_id)?;
     Ok(format!("devices/{device_id}"))
 }

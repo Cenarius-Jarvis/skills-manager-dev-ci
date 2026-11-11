@@ -36,6 +36,8 @@ jobs:
         run: |
           LOG=$(tail -c 3000 identity_test.log | sed ':a;N;$!ba;s/\n/%0A/g')
           echo "::error::identity test tail: $LOG"
+      - name: Verify signed command channel publication
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib signed_channel -- --test-threads=1
       - name: Verify durable signed inbox and restart recovery
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib device_pairing -- --test-threads=1
       - name: Verify signed round trip, updates, and abrupt process termination
