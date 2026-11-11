@@ -41,9 +41,13 @@ pub struct SignedCommandPayload {
     pub skill_subpath: Option<String>,
     pub skill_name: Option<String>,
     pub agent_key: String,
-    /// The publishing manager's device id.
+    /// The publishing manager's device id; also the envelope's device_id,
+    /// because the manager is the signer.
     pub issued_by: String,
     pub issued_by_name: Option<String>,
+    /// The device this command is addressed to. Carried inside the signed
+    /// payload — a device never trusts a directory path alone.
+    pub target_device: String,
 }
 
 /// Channel wire format: the exact signed payload bytes are carried as a
@@ -70,6 +74,7 @@ pub fn validate_signed_command_payload(payload: &SignedCommandPayload) -> Result
         other => bail!("unsupported signed command action {other:?}"),
     }
     devices::validate_device_id(&payload.issued_by)?;
+    devices::validate_device_id(&payload.target_device)?;
     devices::validate_agent_key(&payload.agent_key)?;
     match payload.action.as_str() {
         devices::ACTION_DEPLOY => devices::validate_skill_url(payload.skill_url.as_deref())?,
@@ -111,6 +116,9 @@ pub fn create_signed_command(
     if payload.issued_by != identity.device_id {
         bail!("payload issuer does not match the signing identity");
     }
+    if payload.target_device != target_device_id {
+        bail!("payload target does not match the requested device");
+    }
     let payload_json = serde_json::to_string(payload)?;
     let signed = identity.sign_message(
         MessageKind::Command,
@@ -129,19 +137,21 @@ fn into_channel_message(signed: SignedDeviceMessage, payload_json: &str) -> Sign
     }
 }
 
-/// Full receiver-side verification against the locally paired key. Returns
-/// the validated payload; the caller must still claim the message id via
-/// `device_pairing` and run its own authorization before any effect.
+/// Full receiver-side verification against the locally paired key of the
+/// signing manager. Returns the validated payload; the caller must still
+/// claim the message id via `device_pairing` and run its own authorization
+/// before any effect.
 pub fn verify_channel_command(
     message: &SignedChannelMessage,
     trusted_public_key: &[u8],
-    expected_target_device: &str,
+    expected_signing_device: &str,
+    own_device_id: &str,
     now: i64,
 ) -> Result<SignedCommandPayload> {
     if message.envelope.kind != MessageKind::Command
-        || message.envelope.device_id != expected_target_device
+        || message.envelope.device_id != expected_signing_device
     {
-        bail!("signed command is not addressed to this device");
+        bail!("signed command is not signed by a paired manager");
     }
     if message.payload_json.len() > 1024 * 1024 {
         bail!("signed command payload exceeds the protocol size limit");
@@ -159,7 +169,7 @@ pub fn verify_channel_command(
         &signature,
         message.payload_json.as_bytes(),
         trusted_public_key,
-        expected_target_device,
+        expected_signing_device,
         &message.envelope.key_id,
         MessageKind::Command,
         now,
@@ -167,6 +177,9 @@ pub fn verify_channel_command(
     let payload: SignedCommandPayload = serde_json::from_str(&message.payload_json)
         .context("signed command payload is not valid JSON")?;
     validate_signed_command_payload(&payload)?;
+    if payload.target_device != own_device_id {
+        bail!("signed command is not addressed to this device");
+    }
     Ok(payload)
 }
 
@@ -204,7 +217,11 @@ pub fn publish_signed_command(
     message: &SignedChannelMessage,
 ) -> Result<String> {
     devices::validate_device_id(target_device_id)?;
-    if message.envelope.device_id != target_device_id {
+    // The envelope's device_id is the signing manager; the addressed device
+    // lives inside the signed payload. Both must line up with the request.
+    let payload: SignedCommandPayload = serde_json::from_str(&message.payload_json)
+        .context("signed command payload is not valid JSON")?;
+    if payload.target_device != target_device_id {
         bail!("signed command does not target the requested device");
     }
     let (_tmp, dir) = devices::prepare_working_copy(url, branch)?;
@@ -299,6 +316,7 @@ mod tests {
             agent_key: "codex".to_string(),
             issued_by: issued_by.to_string(),
             issued_by_name: Some("workstation".to_string()),
+            target_device: "dev-target".to_string(),
         }
     }
 
@@ -310,7 +328,9 @@ mod tests {
             1000, DEFAULT_COMMAND_TTL_SECS,
         ).unwrap();
         assert!(message.envelope.message_id.starts_with("cmd-"));
-        let verified = verify_channel_command(&message, &fx.pubkey, "dev-target", 2000).unwrap();
+        let verified = verify_channel_command(
+            &message, &fx.pubkey, &fx.identity.device_id, "dev-target", 2000,
+        ).unwrap();
         assert_eq!(verified, payload(&fx.identity.device_id));
         assert_eq!(verified.agent_key, "codex");
     }
@@ -326,19 +346,33 @@ mod tests {
         // One payload character flipped: the hash check must fail first.
         let mut tampered = message.clone();
         tampered.payload_json = tampered.payload_json.replace("deploy", "depl0y");
-        assert!(verify_channel_command(&tampered, &fx.pubkey, "dev-target", 2000).is_err());
+        assert!(verify_channel_command(
+            &tampered, &fx.pubkey, &fx.identity.device_id, "dev-target", 2000,
+        ).is_err());
 
         // A forged envelope timestamp cannot move the validity window.
         let mut shifted = message.clone();
         shifted.envelope.expires_at += 86_400;
-        assert!(verify_channel_command(&shifted, &fx.pubkey, "dev-target", 2000).is_err());
+        assert!(verify_channel_command(
+            &shifted, &fx.pubkey, &fx.identity.device_id, "dev-target", 2000,
+        ).is_err());
 
         // A foreign key is not trusted.
         let other = fixture();
-        assert!(verify_channel_command(&message, &other.pubkey, "dev-target", 2000).is_err());
+        assert!(verify_channel_command(
+            &message, &other.pubkey, &fx.identity.device_id, "dev-target", 2000,
+        ).is_err());
 
-        // The command is only accepted by its addressed device.
-        assert!(verify_channel_command(&message, &fx.pubkey, "dev-other", 2000).is_err());
+        // A command addressed to another device is refused even when the
+        // signature is valid.
+        let mut retargeted = message.clone();
+        retargeted.payload_json = retargeted.payload_json.replace(
+            &format!(""target_device":"dev-target"",),
+            ""target_device":"dev-other"",
+        );
+        assert!(verify_channel_command(
+            &retargeted, &fx.pubkey, &fx.identity.device_id, "dev-other", 2000,
+        ).is_err());
     }
 
     #[test]
@@ -420,7 +454,9 @@ mod tests {
         assert_eq!(fetched[0], message);
 
         // A fetched command still verifies end to end.
-        verify_channel_command(&fetched[0], &fx.pubkey, "dev-target", 2000).unwrap();
+        verify_channel_command(
+            &fetched[0], &fx.pubkey, &fx.identity.device_id, "dev-target", 2000,
+        ).unwrap();
 
         // Another device's queue is empty.
         assert!(fetch_signed_commands(&url, branch, "dev-other").unwrap().is_empty());

@@ -462,6 +462,7 @@ fn create_signed_instruction_internal(
         agent_key: agent_key.trim().to_string(),
         issued_by: identity.device_id.clone(),
         issued_by_name: Some(devices::local_device_name(store)),
+        target_device: device_id.trim().to_string(),
     };
     let now = chrono::Utc::now().timestamp();
     let ttl = ttl_secs.unwrap_or(signed_channel::DEFAULT_COMMAND_TTL_SECS);
