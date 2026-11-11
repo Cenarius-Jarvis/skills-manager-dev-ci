@@ -456,7 +456,7 @@ fn pairing_manifest_internal(
     purposes: Vec<MessageKind>,
 ) -> Result<device_identity::PairingManifest, AppError> {
     let identity = device_identity::ensure_identity(store).map_err(input_err)?;
-    device_identity::pairing_manifest(&identity, &purposes).map_err(input_err)
+    identity.pairing_manifest(&purposes).map_err(input_err)
 }
 
 /// Export this machine's pairing manifest (public material only) for the
