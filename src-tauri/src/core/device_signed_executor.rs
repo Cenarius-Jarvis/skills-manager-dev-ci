@@ -726,6 +726,61 @@ mod tests {
         let _ = device._dir;
     }
 
+    /// Environment diagnosis: clone a repository we know is valid (this
+    /// checkout), with and without the run_git environment, and dump any
+    /// global git configuration that could affect local clones.
+    #[test]
+    fn clone_environment_diagnostics() {
+        let cwd = std::env::current_dir().unwrap();
+        println!("diagnostics: cwd = {:?}", cwd);
+        let repo_root = cwd
+            .ancestors()
+            .find(|p| p.join(".git").exists())
+            .unwrap_or(cwd.as_path())
+            .to_path_buf();
+        println!("diagnostics: repo_root = {:?}", repo_root);
+
+        let config = std::process::Command::new("git")
+            .args(["config", "--list", "--show-origin", "--global"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string());
+        println!("diagnostics: global config = {config:?}");
+
+        let target = tempfile::tempdir().unwrap();
+        let plain = std::process::Command::new("git")
+            .args([
+                "clone",
+                repo_root.to_string_lossy().as_ref(),
+                target.path().join("plain").to_string_lossy().as_ref(),
+            ])
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .unwrap();
+        println!(
+            "diagnostics: plain clone status = {:?} err = {}",
+            plain.status,
+            String::from_utf8_lossy(&plain.stderr)
+        );
+
+        let with_creds = std::process::Command::new("git")
+            .args([
+                "clone",
+                repo_root.to_string_lossy().as_ref(),
+                target.path().join("creds").to_string_lossy().as_ref(),
+            ])
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_CONFIG_COUNT", "1")
+            .env("GIT_CONFIG_KEY_0", "credential.helper")
+            .env("GIT_CONFIG_VALUE_0", "/sentinel/credential-helper")
+            .output()
+            .unwrap();
+        println!(
+            "diagnostics: run_git-style clone status = {:?} err = {}",
+            with_creds.status,
+            String::from_utf8_lossy(&with_creds.stderr)
+        );
+    }
+
     #[test]
     fn unauthorized_agent_is_rejected_with_a_signed_receipt() {
         let _guard = central_repo::test_base_dir_lock();
