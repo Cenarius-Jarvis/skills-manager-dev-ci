@@ -347,7 +347,8 @@ mod tests {
         assert_eq!(first.public_key_hex(), second.public_key_hex());
 
         // A different device id gets its own independent identity entry.
-        store.set_setting(super::devices::SETTING_DEVICE_LOCAL_ID, "dev-other").unwrap();
+        store.set_setting(crate::core::devices::SETTING_DEVICE_LOCAL_ID, "dev-other")
+            .unwrap();
         let other = ensure_identity(&store).unwrap();
         assert_eq!(other.device_id, "dev-other");
         assert_ne!(other.key_id, first.key_id);
