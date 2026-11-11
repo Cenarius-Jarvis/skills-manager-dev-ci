@@ -12,6 +12,11 @@ use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+#[cfg(test)]
+use std::collections::HashMap;
+#[cfg(test)]
+use std::sync::Mutex;
+
 use super::device_envelope::{self, DeviceEnvelope, MessageKind};
 use super::device_pairing;
 use super::skill_store::SkillStore;
@@ -83,15 +88,61 @@ fn valid_key_id(key_id: &str) -> bool {
     device_envelope::identifier(key_id) && key_id.starts_with("key-")
 }
 
+/// Read the stored identity payload for one device from the OS keychain.
+#[cfg(not(test))]
+fn stored_identity_payload(device_id: &str) -> Result<Option<String>> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, device_id)
+        .context("failed to open the device identity keychain entry")?;
+    match entry.get_password() {
+        Ok(payload) => Ok(Some(payload)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(err) => Err(err).context("failed to read the device identity from the OS keychain"),
+    }
+}
+
+/// Persist the identity payload for one device to the OS keychain.
+#[cfg(not(test))]
+fn save_identity_payload(device_id: &str, payload: &str) -> Result<()> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, device_id)
+        .context("failed to open the device identity keychain entry")?;
+    entry
+        .set_password(payload)
+        .context("failed to store the device identity in the OS keychain")
+}
+
+/// Tests use a process-level map: keyring's own mock backend keeps state
+/// per credential instance, so a fresh `Entry::new` could never read what
+/// an earlier one wrote.
+#[cfg(test)]
+static TEST_IDENTITY_STORE: std::sync::OnceLock<Mutex<HashMap<String, String>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn test_identity_map() -> &'static Mutex<HashMap<String, String>> {
+    TEST_IDENTITY_STORE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+fn stored_identity_payload(device_id: &str) -> Result<Option<String>> {
+    Ok(test_identity_map().lock().unwrap().get(device_id).cloned())
+}
+
+#[cfg(test)]
+fn save_identity_payload(device_id: &str, payload: &str) -> Result<()> {
+    test_identity_map()
+        .lock()
+        .unwrap()
+        .insert(device_id.to_string(), payload.to_string());
+    Ok(())
+}
+
 /// Load this machine's identity, generating and storing a new key pair on
 /// first use. The device id is the stable `local_device_id`, so reloading
 /// never creates a second identity for the same machine.
 pub fn ensure_identity(store: &SkillStore) -> Result<DeviceIdentity> {
     let device_id = super::devices::local_device_id(store)?;
-    let entry = keyring::Entry::new(KEYRING_SERVICE, &device_id)
-        .context("failed to open the device identity keychain entry")?;
-    match entry.get_password() {
-        Ok(payload) => {
+    match stored_identity_payload(&device_id)? {
+        Some(payload) => {
             let stored: StoredIdentity = serde_json::from_str(&payload)
                 .context("stored device identity is not valid JSON")?;
             if stored.version != 1 {
@@ -105,7 +156,7 @@ pub fn ensure_identity(store: &SkillStore) -> Result<DeviceIdentity> {
             }
             Ok(identity)
         }
-        Err(keyring::Error::NoEntry) => {
+        None => {
             let pkcs8_document = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())
                 .map_err(|_| anyhow::anyhow!("failed to generate the device identity key"))?;
             let identity = identity_from_pkcs8(&device_id, pkcs8_document.as_ref())?;
@@ -115,12 +166,9 @@ pub fn ensure_identity(store: &SkillStore) -> Result<DeviceIdentity> {
                 key_id: identity.key_id.clone(),
                 created_at: now_secs(),
             };
-            entry
-                .set_password(&serde_json::to_string(&stored)?)
-                .context("failed to store the device identity in the OS keychain")?;
+            save_identity_payload(&device_id, &serde_json::to_string(&stored)?)?;
             Ok(identity)
         }
-        Err(err) => Err(err).context("failed to read the device identity from the OS keychain"),
     }
 }
 
@@ -324,7 +372,6 @@ pub fn approve_pairing_manifest(store: &SkillStore, json: &str) -> Result<Pairin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::git_credentials;
 
     fn test_store() -> (tempfile::TempDir, SkillStore) {
         let dir = tempfile::tempdir().unwrap();
@@ -338,7 +385,6 @@ mod tests {
 
     #[test]
     fn device_identity_survives_reload_per_device() {
-        git_credentials::use_mock_keyring();
         let (_dir, store) = test_store();
         let first = ensure_identity(&store).unwrap();
         let second = ensure_identity(&store).unwrap();
@@ -356,7 +402,6 @@ mod tests {
 
     #[test]
     fn device_identity_signed_message_verifies_through_pairing() {
-        git_credentials::use_mock_keyring();
         let (_dir, store) = test_store();
         let identity = ensure_identity(&store).unwrap();
         let payload = b"do the thing".to_vec();
@@ -407,7 +452,6 @@ mod tests {
 
     #[test]
     fn device_identity_tampered_payload_is_rejected() {
-        git_credentials::use_mock_keyring();
         let (_dir, store) = test_store();
         let identity = ensure_identity(&store).unwrap();
         let signed = identity
@@ -431,7 +475,6 @@ mod tests {
 
     #[test]
     fn device_identity_sign_clamps_ttl_and_rejects_bad_time() {
-        git_credentials::use_mock_keyring();
         let (_dir, store) = test_store();
         let identity = ensure_identity(&store).unwrap();
         assert!(identity.sign_message(MessageKind::Receipt, b"x".to_vec(), 0, 300).is_err());
@@ -445,7 +488,6 @@ mod tests {
 
     #[test]
     fn device_identity_manifest_preview_rejects_tampering() {
-        git_credentials::use_mock_keyring();
         let (_dir, store) = test_store();
         let identity = ensure_identity(&store).unwrap();
         let json = serde_json::to_string(&identity.pairing_manifest(&command_only()).unwrap()).unwrap();
@@ -471,7 +513,6 @@ mod tests {
 
     #[test]
     fn device_identity_approve_is_idempotent_but_never_replaces() {
-        git_credentials::use_mock_keyring();
         let (_dir, store) = test_store();
         let identity = ensure_identity(&store).unwrap();
         let manifest = identity.pairing_manifest(&command_only()).unwrap();
@@ -494,7 +535,6 @@ mod tests {
 
     #[test]
     fn device_identity_revoked_key_cannot_return_through_repairing() {
-        git_credentials::use_mock_keyring();
         let (_dir, store) = test_store();
         let identity = ensure_identity(&store).unwrap();
         let manifest = identity.pairing_manifest(&command_only()).unwrap();
@@ -510,7 +550,6 @@ mod tests {
 
     #[test]
     fn device_identity_multi_purpose_manifest_registers_each_slot() {
-        git_credentials::use_mock_keyring();
         let (_dir, store) = test_store();
         let identity = ensure_identity(&store).unwrap();
         let purposes = vec![MessageKind::Command, MessageKind::LibraryReport];
