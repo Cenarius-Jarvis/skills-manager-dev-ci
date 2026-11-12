@@ -818,6 +818,7 @@ mod tests {
                 "daemon",
                 "--port=9418",
                 "--listen=127.0.0.1",
+                "--reuseaddr",
                 "--export-all",
                 base_str.as_str(),
                 "--verbose",
