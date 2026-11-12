@@ -24,6 +24,7 @@ use super::content_hash;
 use super::device_envelope::MessageKind;
 use super::git_fetcher;
 use super::device_identity::{self, DeviceIdentity};
+use super::device_pairing;
 use super::device_pairing::{
     prepare_claimed_command, verify_and_claim_paired, PreparedDeviceCommand,
 };
