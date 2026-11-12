@@ -388,46 +388,112 @@ fn execute_deploy(
         Some(skill) => {
             // Update / multi-agent extension; the same-source guard before
             // the fetch already rejected anything this channel did not
-            // install. Overwrite our own library copy in place instead of
-            // letting the installer invent a new name for a conflict.
-            let installed = installer::install_skill_dir_to_destination(&skill_dir, name, &library_path)
-                .context("refreshing the library copy failed")?;
-            let central = installed.central_path;
-            if central != library_path {
+            // install.
+            //
+            // Safety sequence: hash-check the library copy and every managed
+            // deployment against their recorded hashes BEFORE anything is
+            // replaced; stage the new revision and verify it; then swap the
+            // library atomically (the old copy stays as a backup until the
+            // whole update succeeds). A failure mid-way leaves verified
+            // published content on the refreshed agents and the previous
+            // content on the rest — re-sending the same pinned command
+            // retries exactly what is left, never overwriting user edits
+            // (the pre-checks run again on every attempt).
+            let Some(recorded_hash) = skill.content_hash.clone() else {
+                bail!("library record for {name:?} has no content hash; refusing to update");
+            };
+            let central = std::fs::canonicalize(&library_path)
+                .context("library copy is unavailable")?;
+            let current_library_hash = content_hash::hash_directory(&central)?;
+            if current_library_hash != recorded_hash {
                 bail!(
-                    "refreshed path drifted from the requested library location (installed {:?}, requested {:?})",
-                    central, library_path
+                    "library copy was modified locally (hash changed since last deploy); refusing to update"
                 );
             }
-            let hash = content_hash::hash_directory(&central)?;
-            if hash != installed.content_hash {
-                bail!("library copy hash changed right after refresh");
+            let rows = store.get_targets_for_skill(&skill.id)?;
+            for row in &rows {
+                let Some(row_hash) = &row.source_hash else {
+                    bail!(
+                        "deployment for {} has no recorded hash; refusing to update",
+                        row.target_path
+                    );
+                };
+                let row_path = PathBuf::from(&row.target_path);
+                let meta = std::fs::symlink_metadata(&row_path)
+                    .with_context(|| format!("deployment {} is unavailable", row.target_path))?;
+                if !meta.file_type().is_symlink() {
+                    let current = content_hash::hash_directory(&row_path)?;
+                    if current != *row_hash {
+                        bail!(
+                            "deployment {} was modified locally (hash changed since last deploy); refusing to update",
+                            row.target_path
+                        );
+                    }
+                }
             }
-            store.update_skill_after_install(
-                &skill.id,
-                &installed.name,
-                installed.description.as_deref(),
-                Some(head.as_str()),
-                Some(head.as_str()),
-                Some(hash.as_str()),
-                "up_to_date",
-            )?;
+
+            // Stage the new revision next to the library copy and verify the
+            // staged tree before anything on disk is replaced.
+            let library_parent = library_path
+                .parent()
+                .context("library directory has no parent")?
+                .to_path_buf();
+            let staging = library_parent.join(format!(".{name}.staging"));
+            let _ = std::fs::remove_dir_all(&staging);
+            installer::install_skill_dir_to_destination(&skill_dir, name, &staging)
+                .context("staging the new revision failed")?;
+            let staged_hash = content_hash::hash_directory(&staging)?;
+
+            let backup = library_parent.join(format!(".{name}.backup"));
+            let _ = std::fs::remove_dir_all(&backup);
+            std::fs::rename(&library_path, &backup)
+                .context("swapping the library copy failed")?;
+            if std::fs::rename(&staging, &library_path).is_err() {
+                std::fs::rename(&backup, &library_path)
+                    .context("library rollback also failed; backup left in place")?;
+                bail!("library swap failed; previous copy restored from backup");
+            }
+            let swap_result: Result<()> = (|| {
+                let new_hash = content_hash::hash_directory(&library_path)?;
+                if new_hash != staged_hash {
+                    bail!("swapped-in library copy does not match the staged content");
+                }
+                store.update_skill_after_install(
+                    &skill.id,
+                    name,
+                    None,
+                    Some(head.as_str()),
+                    Some(head.as_str()),
+                    Some(new_hash.as_str()),
+                    "up_to_date",
+                )?;
+                Ok(())
+            });
+            if let Err(err) = swap_result {
+                // Roll the library back; the update can be retried with the
+                // same pinned command.
+                let _ = std::fs::remove_dir_all(&library_path);
+                let _ = std::fs::rename(&backup, &library_path);
+                return Err(err.context("library update rolled back"));
+            }
 
             // Refresh every managed deployment of this skill ...
-            let rows = store.get_targets_for_skill(&skill.id)?;
             let mut touched_requested = false;
-            for row in rows {
+            for row in &rows {
                 let row_target = PathBuf::from(&row.target_path);
                 let policy = ReplacePolicy::Recorded { mode: &row.mode };
                 let actual = sync_engine::sync_skill(
-                    &central,
+                    &library_path,
                     &row_target,
                     sync_engine::sync_mode_for_tool(&row.tool, None),
                     policy,
                 ).context("refreshing a managed deployment failed")?;
                 let row_hash = content_hash::hash_directory(&row_target)?;
-                if row_hash != hash {
-                    bail!("refreshed copy at {} does not match the library copy", row.target_path);
+                if row_hash != staged_hash {
+                    bail!(
+                        "refreshed copy at {} does not match the library copy; re-sending the same pinned command refreshes the remaining agents",
+                        row.target_path
+                    );
                 }
                 let row_tool = row.tool.clone();
                 let row_path = row.target_path.clone();
@@ -441,7 +507,7 @@ fn execute_deploy(
                     status: "ok".to_string(),
                     synced_at: Some(chrono::Utc::now().timestamp_millis()),
                     last_error: None,
-                    source_hash: Some(hash.clone()),
+                    source_hash: Some(staged_hash.clone()),
                 })?;
                 if row.tool == agent_key {
                     touched_requested = true;
@@ -449,10 +515,10 @@ fn execute_deploy(
             }
             // ... and extend to the requested agent when it is a new one.
             if !touched_requested {
-                let actual = sync_engine::sync_skill(&central, &target, mode, ReplacePolicy::NoClobber)
+                let actual = sync_engine::sync_skill(&library_path, &target, mode, ReplacePolicy::NoClobber)
                     .context("deploying into the agent directory failed")?;
                 let deployed_hash = content_hash::hash_directory(&target)?;
-                if deployed_hash != hash {
+                if deployed_hash != staged_hash {
                     bail!("agent copy does not match the library copy; preserved for inspection");
                 }
                 store.insert_target(&SkillTargetRecord {
@@ -464,9 +530,11 @@ fn execute_deploy(
                     status: "ok".to_string(),
                     synced_at: Some(chrono::Utc::now().timestamp_millis()),
                     last_error: None,
-                    source_hash: Some(hash.clone()),
+                    source_hash: Some(staged_hash.clone()),
                 })?;
             }
+            // Everything refreshed: the backup is no longer needed.
+            let _ = std::fs::remove_dir_all(&backup);
             sync_metadata::write_all_from_db_unlocked(store)
                 .context("publishing skill metadata failed; deployment preserved")?;
             Ok(target)
