@@ -859,8 +859,10 @@ mod tests {
             });
         println!("fixture: after commit, git log = {log:?}");
         // git:// under the daemon: the production URL rules allow exactly
-        // https:// and git://, so tests use the allowed scheme too.
-        (channel.to_string_lossy().to_string(), format!("git://127.0.0.1/{skill_name}"))
+        // https:// and git://, so tests use the allowed scheme too. The
+        // daemon serves the manager dir, so the repo is under source/.
+        let daemon = start_git_daemon(manager_dir);
+        (channel.to_string_lossy().to_string(), format!("git://127.0.0.1/source/{skill_name}"), daemon)
     }
 
     /// Pair the device with the manager: the device trusts the manager's
