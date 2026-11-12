@@ -813,19 +813,40 @@ mod tests {
 
     fn start_git_daemon(base: &Path) -> GitDaemon {
         let base_str = base.to_string_lossy().to_string();
-        let child = std::process::Command::new("git")
-            .args(["daemon", "--port=9418", "--export-all", "--base-path", base_str.as_str()])
+        let mut child = std::process::Command::new("git")
+            .args([
+                "daemon",
+                "--port=9418",
+                "--listen=127.0.0.1",
+                "--export-all",
+                "--base-path",
+                base_str.as_str(),
+                "--verbose",
+            ])
             .current_dir(base)
+            .stderr(std::process::Stdio::piped())
             .spawn()
             .expect("failed to start git daemon");
-        let daemon = GitDaemon { child };
-        for _ in 0..100 {
+        for _attempt in 0..100 {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    let mut buffer = String::new();
+                    if let Some(mut stderr) = child.stderr.take() {
+                        use std::io::Read;
+                        let _ = stderr.read_to_string(&mut buffer);
+                    }
+                    panic!("git daemon exited immediately ({status}): {buffer}");
+                }
+                Ok(None) => {}
+                Err(err) => panic!("git daemon wait failed: {err}"),
+            }
             if std::net::TcpStream::connect(("127.0.0.1", 9418)).is_ok() {
-                return daemon;
+                return GitDaemon { child };
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        panic!("git daemon did not become ready");
+        let _ = child.kill();
+        panic!("git daemon did not become ready on 127.0.0.1:9418");
     }
 
     fn channel_and_source(manager_dir: &Path, skill_name: &str) -> (String, String, GitDaemon) {
