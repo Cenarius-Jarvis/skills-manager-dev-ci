@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 
 /// Current schema version. Bump this when adding a new migration.
-const LATEST_VERSION: u32 = 14;
+const LATEST_VERSION: u32 = 15;
 
 /// Run all pending migrations on the database.
 ///
@@ -61,6 +61,7 @@ fn migrate_step(conn: &Connection, from_version: u32) -> Result<()> {
         11 => migrate_v11_to_v12(conn),
         12 => migrate_v12_to_v13(conn),
         13 => migrate_v13_to_v14(conn),
+        14 => migrate_v14_to_v15(conn),
         _ => bail!("unknown migration version: {from_version}"),
     }
 }
@@ -470,6 +471,25 @@ fn migrate_v13_to_v14(conn: &Connection) -> Result<()> {
             new_hash TEXT NOT NULL,
             phase TEXT NOT NULL,
             updated_at INTEGER NOT NULL
+        );"
+    )?;
+    Ok(())
+}
+
+/// v14 → v15: per-target progress for one update operation. Written before
+/// a target is touched and advanced afterwards, so a restart can report
+/// exactly which agents were refreshed and which were not.
+fn migrate_v14_to_v15(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS update_targets_v1 (
+            operation_id TEXT NOT NULL,
+            agent_key TEXT NOT NULL,
+            target_path TEXT NOT NULL,
+            old_hash TEXT,
+            new_hash TEXT,
+            phase TEXT NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY(operation_id, agent_key)
         );"
     )?;
     Ok(())

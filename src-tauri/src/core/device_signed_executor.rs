@@ -458,23 +458,40 @@ fn execute_deploy(
             };
             let rows = store.get_targets_for_skill(&skill.id)?;
             for row in &rows {
-                let Some(row_hash) = &row.source_hash else {
-                    bail!(
-                        "deployment for {} has no recorded hash; refusing to update",
-                        row.target_path
-                    );
-                };
                 let row_path = PathBuf::from(&row.target_path);
                 let meta = std::fs::symlink_metadata(&row_path)
                     .with_context(|| format!("deployment {} is unavailable", row.target_path))?;
-                if !meta.file_type().is_symlink() {
-                    let current = content_hash::hash_directory(&row_path)?;
-                    if current != *row_hash {
-                        bail!(
-                            "deployment {} was modified locally (hash changed since last deploy); refusing to update",
-                            row.target_path
-                        );
+                if meta.file_type().is_symlink() {
+                    continue;
+                }
+                let current = content_hash::hash_directory(&row_path)?;
+                match &row.source_hash {
+                    None => {
+                        // No baseline: a prior interrupted operation may have
+                        // replaced the files before its record update landed.
+                        if !repair_target_record_if_interrupted_write(
+                            store, &skill.id, &row.tool, &row_path, &current,
+                        )? {
+                            bail!(
+                                "deployment for {} has no recorded hash; refusing to update",
+                                row.target_path
+                            );
+                        }
                     }
+                    Some(row_hash) if current != *row_hash => {
+                        // The bytes differ from the record: they are either a
+                        // user edit (refuse) or the verified content of an
+                        // interrupted earlier attempt (repair the record).
+                        if !repair_target_record_if_interrupted_write(
+                            store, &skill.id, &row.tool, &row_path, &current,
+                        )? {
+                            bail!(
+                                "deployment {} was modified locally (hash changed since last deploy); refusing to update",
+                                row.target_path
+                            );
+                        }
+                    }
+                    _ => {}
                 }
             }
 
@@ -551,16 +568,49 @@ fn execute_deploy(
             // Refresh every managed deployment of this skill ...
             let mut touched_requested = false;
             for row in &rows {
+                // Announce the target before touching it, so a crash leaves
+                // a durable per-target record of the intended old/new pair.
+                store.with_conn(|conn| {
+                    initialize_update_operations(conn)?;
+                    record_update_target(
+                        conn, &record.operation_id, &row.tool, &row.target_path,
+                        row.source_hash.as_deref(), Some(&staged_hash), TARGET_PHASE_PENDING,
+                    )
+                })?;
                 let row_target = PathBuf::from(&row.target_path);
                 let policy = ReplacePolicy::Recorded { mode: &row.mode };
-                let actual = sync_engine::sync_skill(
+                let sync_result = sync_engine::sync_skill(
                     &library_path,
                     &row_target,
                     sync_engine::sync_mode_for_tool(&row.tool, None),
                     policy,
-                ).context("refreshing a managed deployment failed")?;
+                );
+                let actual = match sync_result {
+                    Ok(actual) => actual,
+                    Err(err) => {
+                        store.with_conn(|conn| {
+                            record_update_target(
+                                conn, &record.operation_id, &row.tool, &row.target_path,
+                                row.source_hash.as_deref(), Some(&staged_hash), TARGET_PHASE_FAILED,
+                            )
+                        })?;
+                        record.phase = UPDATE_PHASE_FAILED.to_string();
+                        record.updated_at = chrono::Utc::now().timestamp();
+                        record_update_operation(store, &record)?;
+                        return Err(err).context(format!(
+                            "refreshing deployment {} failed; earlier targets keep their refreshed content and the operation record lists what remains",
+                            row.target_path
+                        ));
+                    }
+                };
                 let row_hash = content_hash::hash_directory(&row_target)?;
                 if row_hash != staged_hash {
+                    store.with_conn(|conn| {
+                        record_update_target(
+                            conn, &record.operation_id, &row.tool, &row.target_path,
+                            row.source_hash.as_deref(), Some(&staged_hash), TARGET_PHASE_FAILED,
+                        )
+                    })?;
                     record.phase = UPDATE_PHASE_FAILED.to_string();
                     record.updated_at = chrono::Utc::now().timestamp();
                     record_update_operation(store, &record)?;
@@ -571,17 +621,41 @@ fn execute_deploy(
                 }
                 let row_tool = row.tool.clone();
                 let row_path = row.target_path.clone();
-                store.delete_target(&skill.id, &row_tool)?;
-                store.insert_target(&SkillTargetRecord {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    skill_id: skill.id.clone(),
-                    tool: row_tool,
-                    target_path: row_path,
-                    mode: actual.as_str().to_string(),
-                    status: "ok".to_string(),
-                    synced_at: Some(chrono::Utc::now().timestamp_millis()),
-                    last_error: None,
-                    source_hash: Some(staged_hash.clone()),
+                let record_result = (|| -> Result<()> {
+                    store.delete_target(&skill.id, &row_tool)?;
+                    store.insert_target(&SkillTargetRecord {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        skill_id: skill.id.clone(),
+                        tool: row_tool,
+                        target_path: row_path,
+                        mode: actual.as_str().to_string(),
+                        status: "ok".to_string(),
+                        synced_at: Some(chrono::Utc::now().timestamp_millis()),
+                        last_error: None,
+                        source_hash: Some(staged_hash.clone()),
+                    })?;
+                    Ok(())
+                })();
+                if let Err(err) = record_result {
+                    store.with_conn(|conn| {
+                        record_update_target(
+                            conn, &record.operation_id, &row.tool, &row.target_path,
+                            row.source_hash.as_deref(), Some(&staged_hash), TARGET_PHASE_FAILED,
+                        )
+                    })?;
+                    record.phase = UPDATE_PHASE_FAILED.to_string();
+                    record.updated_at = chrono::Utc::now().timestamp();
+                    record_update_operation(store, &record)?;
+                    return Err(err).context(format!(
+                        "recording the refreshed deployment {} failed; the files carry the new content and the next update attempt repairs the record",
+                        row.target_path
+                    ));
+                }
+                store.with_conn(|conn| {
+                    record_update_target(
+                        conn, &record.operation_id, &row.tool, &row.target_path,
+                        row.source_hash.as_deref(), Some(&staged_hash), TARGET_PHASE_REFRESHED,
+                    )
                 })?;
                 if row.tool == agent_key {
                     touched_requested = true;
@@ -720,6 +794,9 @@ pub const UPDATE_PHASE_REFRESHING: &str = "refreshing";
 pub const UPDATE_PHASE_DONE: &str = "done";
 pub const UPDATE_PHASE_FAILED: &str = "failed";
 pub const UPDATE_PHASE_MANUAL: &str = "needs-manual-attention";
+pub const TARGET_PHASE_PENDING: &str = "pending";
+pub const TARGET_PHASE_REFRESHED: &str = "refreshed";
+pub const TARGET_PHASE_FAILED: &str = "failed";
 
 pub fn initialize_receipt_outbox(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(&format!(
@@ -818,6 +895,50 @@ fn clear_execution_ledger(conn: &rusqlite::Connection, instruction_id: &str) -> 
     Ok(())
 }
 
+/// A target whose current content equals a previous update operation's
+/// verified new content: the interrupted operation replaced the files but
+/// its record update did not survive. The hash match proves the bytes are
+/// exactly what the pinned command staged, so re-recording them is a safe,
+/// provable repair — never a guess.
+fn repair_target_record_if_interrupted_write(
+    store: &SkillStore, skill_id: &str, agent_key: &str,
+    target_path: &Path, current_hash: &str,
+) -> Result<bool> {
+    let repaired = store.with_conn(|conn| {
+        initialize_update_operations(conn)?;
+        let matched: Option<String> = conn
+            .query_row(
+                "SELECT ot.operation_id FROM update_targets_v1 ot
+                 WHERE ot.target_path = ?1 AND ot.new_hash = ?2
+                       AND ot.phase IN ('pending', 'refreshed', 'failed')
+                 LIMIT 1",
+                rusqlite::params![target_path.to_string_lossy(), current_hash],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(operation_id) = matched else { return Ok(false) };
+        conn.execute(
+            "UPDATE skill_targets SET source_hash = ?1, status = 'ok', last_error = NULL,
+                    synced_at = ?2
+             WHERE skill_id = ?3 AND tool = ?4",
+            rusqlite::params![current_hash, chrono::Utc::now().timestamp_millis(), skill_id, agent_key],
+        )?;
+        conn.execute(
+            "UPDATE update_targets_v1 SET phase = 'refreshed', updated_at = ?1
+             WHERE operation_id = ?2 AND agent_key = ?3",
+            rusqlite::params![chrono::Utc::now().timestamp(), operation_id, agent_key],
+        )?;
+        Ok(true)
+    })?;
+    if repaired {
+        log::warn!(
+            "deployment for {} matched an interrupted update's staged content; its record was repaired",
+            target_path.display()
+        );
+    }
+    Ok(repaired)
+}
+
 /// Every command whose execution started without a durable outcome.
 fn pending_unknown_executions(store: &SkillStore) -> Result<Vec<String>> {
     store.with_conn(|conn| {
@@ -864,7 +985,33 @@ fn initialize_update_operations(conn: &rusqlite::Connection) -> Result<()> {
             new_hash TEXT NOT NULL,
             phase TEXT NOT NULL,
             updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS update_targets_v1 (
+            operation_id TEXT NOT NULL,
+            agent_key TEXT NOT NULL,
+            target_path TEXT NOT NULL,
+            old_hash TEXT,
+            new_hash TEXT,
+            phase TEXT NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY(operation_id, agent_key)
         );"
+    )?;
+    Ok(())
+}
+
+fn record_update_target(
+    conn: &rusqlite::Connection, operation_id: &str, agent_key: &str,
+    target_path: &str, old_hash: Option<&str>, new_hash: Option<&str>, phase: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO update_targets_v1
+            (operation_id, agent_key, target_path, old_hash, new_hash, phase, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(operation_id, agent_key) DO UPDATE SET
+            old_hash = excluded.old_hash, new_hash = excluded.new_hash,
+            phase = excluded.phase, updated_at = excluded.updated_at",
+        rusqlite::params![operation_id, agent_key, target_path, old_hash, new_hash, phase, chrono::Utc::now().timestamp()],
     )?;
     Ok(())
 }
