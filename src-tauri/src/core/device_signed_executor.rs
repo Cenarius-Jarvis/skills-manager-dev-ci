@@ -1574,6 +1574,8 @@ mod tests {
         let _ = device._dir;
     }
 
+    }
+
     /// ④ A crash between "execution started" and "receipt persisted" leaves
     /// an explicit unknown receipt on the channel — and the command itself
     /// is never re-executed (its replay claim was already consumed).
