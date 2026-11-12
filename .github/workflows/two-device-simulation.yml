@@ -27,6 +27,12 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       # Every test step tees its output; the annotation step at the end
       # surfaces the tails anonymously (no login needed to read them back).
+      - name: Start fixture git daemon
+        shell: bash
+        run: |
+          mkdir -p /tmp/gitdaemon-root
+          git daemon --port=9418 --listen=127.0.0.1 --reuseaddr --export-all --base-path=/tmp/gitdaemon-root > /tmp/gitdaemon.log 2>&1 &
+          sleep 1
       - name: Verify device identity signing and pairing approval
         shell: bash
         run: |

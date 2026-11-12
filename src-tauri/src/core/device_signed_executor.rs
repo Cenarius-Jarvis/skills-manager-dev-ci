@@ -799,56 +799,7 @@ mod tests {
     }
 
     /// Channel repo plus a local git repository holding one skill.
-    /// Serves every repository under `base` over git:// for the test. The
-    /// production source-URL rules allow exactly https:// and git://, so an
-    /// isolated test uses git:// against a local daemon — the same shape as
-    /// an air-gapped LAN mirror, and no network dependency.
-    struct GitDaemon { child: std::process::Child }
-    impl Drop for GitDaemon {
-        fn drop(&mut self) {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-        }
-    }
-
-    fn start_git_daemon(base: &Path) -> GitDaemon {
-        let base_str = format!("--base-path={}", base.to_string_lossy());
-        let mut child = std::process::Command::new("git")
-            .args([
-                "daemon",
-                "--port=9418",
-                "--listen=127.0.0.1",
-                "--reuseaddr",
-                "--export-all",
-                base_str.as_str(),
-            ])
-            .current_dir(base)
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .expect("failed to start git daemon");
-        for _attempt in 0..100 {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    let mut buffer = String::new();
-                    if let Some(mut stderr) = child.stderr.take() {
-                        use std::io::Read;
-                        let _ = stderr.read_to_string(&mut buffer);
-                    }
-                    panic!("git daemon exited immediately ({status}): {buffer}");
-                }
-                Ok(None) => {}
-                Err(err) => panic!("git daemon wait failed: {err}"),
-            }
-            if std::net::TcpStream::connect(("127.0.0.1", 9418)).is_ok() {
-                return GitDaemon { child };
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-        let _ = child.kill();
-        panic!("git daemon did not become ready on 127.0.0.1:9418");
-    }
-
-    fn channel_and_source(manager_dir: &Path, skill_name: &str) -> (String, String, GitDaemon) {
+    fn channel_and_source(manager_dir: &Path, skill_name: &str) -> (String, String) {
         let channel = manager_dir.join("channel.git");
         let channel_arg = channel.to_string_lossy().to_string();
         git(&manager_dir.to_path_buf(), &["init", "--bare", channel_arg.as_str()]);
@@ -859,30 +810,19 @@ mod tests {
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(src.join("SKILL.md"), format!("# {skill_name}\n")).unwrap();
         git(&src, &["init", "-b", "main"]);
-        println!(
-            "fixture: after init, .git present = {:?}",
-            src.join(".git").exists()
-        );
         git(&src, &["add", "-A"]);
         git(&src, &["commit", "-m", "skill"]);
-        let log = std::process::Command::new("git")
-            .args(["log", "--oneline"])
-            .current_dir(&src)
-            .output()
-            .map(|o| {
-                format!(
-                    "status={:?} out={} err={}",
-                    o.status,
-                    String::from_utf8_lossy(&o.stdout),
-                    String::from_utf8_lossy(&o.stderr)
-                )
-            });
-        println!("fixture: after commit, git log = {log:?}");
-        // git:// under the daemon: the production URL rules allow exactly
-        // https:// and git://, so tests use the allowed scheme too. The
-        // daemon serves the manager dir, so the repo is under source/.
-        let daemon = start_git_daemon(manager_dir);
-        (channel.to_string_lossy().to_string(), format!("git://127.0.0.1/source/{skill_name}"), daemon)
+        // Publish the source into the shared fixture daemon root (the
+        // workflow runs `git daemon --base-path=$GITDAEMON_ROOT`), so the
+        // device fetches over the production-allowed git:// scheme.
+        let daemon_root = std::path::PathBuf::from(
+            std::env::var("GITDAEMON_ROOT").expect("GITDAEMON_ROOT must be set for executor fixtures"),
+        );
+        let served = daemon_root.join(skill_name);
+        std::fs::create_dir_all(&served).unwrap();
+        git(&served, &["init", "--bare", "-b", "main"]);
+        git(&src, &["push", served.to_string_lossy().as_ref(), "main"]);
+        (channel.to_string_lossy().to_string(), format!("git://127.0.0.1/{skill_name}"))
     }
 
     /// Pair the device with the manager: the device trusts the manager's
@@ -972,7 +912,7 @@ mod tests {
         // A legal https URL that cannot be cloned: the full cycle is
         // exercised without any network dependency, and the device must
         // still answer with a signed receipt.
-        let (channel_url, _unused, _daemon) = channel_and_source(manager._dir.path(), "unused");
+        let (channel_url, _unused) = channel_and_source(manager._dir.path(), "unused");
         pair(&device, &manager);
 
         let payload = deploy_payload(&manager, "https://example.invalid/skills.git", "codex", "demo-skill");
@@ -1027,7 +967,7 @@ mod tests {
         let device = device_fixture();
         let _override = OverrideGuard::set(&device.base);
         authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
-        let (_channel_url, skill_url, _daemon) = channel_and_source(manager._dir.path(), "demo-skill");
+        let (_channel_url, skill_url) = channel_and_source(manager._dir.path(), "demo-skill");
         pair(&device, &manager);
 
         let payload = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
@@ -1052,7 +992,7 @@ mod tests {
         let device = device_fixture();
         let _override = OverrideGuard::set(&device.base);
         authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
-        let (channel_url, _unused, _daemon) = channel_and_source(manager._dir.path(), "unused");
+        let (channel_url, _unused) = channel_and_source(manager._dir.path(), "unused");
         pair(&device, &manager);
 
         // The command names an agent this device never authorized; the
@@ -1082,7 +1022,7 @@ mod tests {
         let device = device_fixture();
         let _override = OverrideGuard::set(&device.base);
         authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
-        let (channel_url, _skill_url, _daemon) = channel_and_source(manager._dir.path(), "demo-skill");
+        let (channel_url, _skill_url) = channel_and_source(manager._dir.path(), "demo-skill");
         pair(&device, &manager);
 
         // A skill with this name already lives in the device's library.
@@ -1114,7 +1054,7 @@ mod tests {
         let device = device_fixture();
         let _override = OverrideGuard::set(&device.base);
         authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
-        let (channel_url, skill_url, _daemon) = channel_and_source(manager._dir.path(), "demo-skill");
+        let (channel_url, skill_url) = channel_and_source(manager._dir.path(), "demo-skill");
         // No pairing: the device does not know this manager.
 
         let payload = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
@@ -1153,8 +1093,14 @@ mod tests {
         git(&skill_src, &["init", "-b", "main"]);
         git(&skill_src, &["add", "-A"]);
         git(&skill_src, &["commit", "-m", "v1"]);
-        let _daemon = start_git_daemon(&manager._dir.path());
-        let skill_url = "git://127.0.0.1/source/demo-skill".to_string();
+        let daemon_root = std::path::PathBuf::from(
+            std::env::var("GITDAEMON_ROOT").expect("GITDAEMON_ROOT must be set for executor fixtures"),
+        );
+        let served = daemon_root.join("demo-skill");
+        std::fs::create_dir_all(&served).unwrap();
+        git(&served, &["init", "--bare", "-b", "main"]);
+        git(&skill_src, &["push", served.to_string_lossy().as_ref(), "main"]);
+        let skill_url = "git://127.0.0.1/demo-skill".to_string();
         let channel = manager._dir.path().join("channel.git");
         let channel_arg = channel.to_string_lossy().to_string();
         git(&manager._dir.path(), &["init", "--bare", channel_arg.as_str()]);
@@ -1185,6 +1131,7 @@ mod tests {
         std::fs::write(skill_src.join("SKILL.md"), "# v2").unwrap();
         git(&skill_src, &["add", "-A"]);
         git(&skill_src, &["commit", "-m", "v2"]);
+        git(&skill_src, &["push", served.to_string_lossy().as_ref(), "main"]);
         let payload3 = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
         publish_command(&manager, &channel_url, &payload3);
         let report3 = run_signed_once(&device.store, &config).unwrap();
@@ -1226,7 +1173,7 @@ mod tests {
         let device = device_fixture();
         let _override = OverrideGuard::set(&device.base);
         authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
-        let (channel_url, skill_url, _daemon) = channel_and_source(manager._dir.path(), "demo-skill");
+        let (channel_url, skill_url) = channel_and_source(manager._dir.path(), "demo-skill");
         pair(&device, &manager);
         let config = SignedExecutorConfig::new(
             channel_url.clone(), BRANCH.to_string(), TARGET_DEVICE.to_string(),
@@ -1280,7 +1227,7 @@ mod tests {
         let device = device_fixture();
         let _override = OverrideGuard::set(&device.base);
         authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
-        let (channel_url, _skill_url, _daemon) = channel_and_source(manager._dir.path(), "demo-skill");
+        let (channel_url, _skill_url) = channel_and_source(manager._dir.path(), "demo-skill");
         pair(&device, &manager);
 
         let mut payload = deploy_payload(&manager, "git://127.0.0.1/demo-skill", "codex", "demo-skill");
@@ -1307,7 +1254,7 @@ mod tests {
         let device = device_fixture();
         let _override = OverrideGuard::set(&device.base);
         authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
-        let (channel_url, skill_url, _daemon) = channel_and_source(manager._dir.path(), "demo-skill");
+        let (channel_url, skill_url) = channel_and_source(manager._dir.path(), "demo-skill");
         pair(&device, &manager);
 
         // Simulate an execution whose receipt was durable but unpublished:
