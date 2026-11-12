@@ -69,6 +69,8 @@ jobs:
           if [ -f linux_build.log ]; then
             if grep -q "^error" linux_build.log; then
               LOG=$(grep -E "^error" -A6 linux_build.log | tail -c 2600)
+            elif [ -f signed_executor_test.log ] && grep -q "full report" signed_executor_test.log 2>/dev/null; then
+              LOG=$(grep -B2 -A40 "full report" signed_executor_test.log | tail -c 2600)
             else
               LOG=$(tail -c 2600 linux_build.log)
             fi

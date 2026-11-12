@@ -1189,6 +1189,15 @@ mod tests {
 
         let remove = undeploy_payload(&manager, "codex", "demo-skill");
         publish_command(&manager, &channel_url, &remove);
+        let queued = signed_channel::fetch_signed_commands(&channel_url, BRANCH, TARGET_DEVICE).unwrap();
+        for m in &queued {
+            println!(
+                "fixture: queued {} action={:?} url={:?}",
+                m.envelope.message_id,
+                serde_json::from_str::<SignedCommandPayload>(&m.payload_json).map(|p| p.action),
+                serde_json::from_str::<SignedCommandPayload>(&m.payload_json).map(|p| p.skill_url),
+            );
+        }
         let report2 = run_signed_once(&device.store, &config).unwrap();
         assert_eq!(report2.rejected, 1, "{report2:#?}");
         assert_eq!(
