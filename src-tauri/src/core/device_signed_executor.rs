@@ -1856,4 +1856,231 @@ mod tests {
         }).unwrap();
         let _ = device._dir;
     }
+
+    /// ①② Leftover staging/backup directories from an earlier interrupted
+    /// update are preserved untouched, reported, and never adopted or
+    /// deleted by a later successful update.
+    #[test]
+    fn stale_staging_and_backup_are_preserved() {
+        let _guard = central_repo::test_base_dir_lock();
+        let manager = manager_fixture();
+        let device = device_fixture();
+        let _override = OverrideGuard::set(&device.base);
+        device.store.set_setting("sync_mode", "copy").unwrap();
+        authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
+        let (channel_url, skill_url, _daemon) = channel_and_source(manager._dir.path(), "demo-skill");
+        pair(&device, &manager);
+        let config = SignedExecutorConfig::new(
+            channel_url.clone(), BRANCH.to_string(), TARGET_DEVICE.to_string(),
+        );
+
+        // Two directories an earlier crashed update might have left behind,
+        // each holding a user file that must survive.
+        let stale_staging = device.base.join("skills").join(".demo-skill.staging.deadbeef");
+        let stale_backup = device.base.join("skills").join(".demo-skill.backup.deadbeef");
+        std::fs::create_dir_all(&stale_staging).unwrap();
+        std::fs::create_dir_all(&stale_backup).unwrap();
+        std::fs::write(stale_staging.join("user-file.txt"), "staging user data").unwrap();
+        std::fs::write(stale_backup.join("user-file.txt"), "backup user data").unwrap();
+
+        let payload = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
+        publish_command(&manager, &channel_url, &payload);
+        let report = run_signed_once(&device.store, &config).unwrap();
+        assert_eq!(report.executed, 1, "{report:#?}");
+
+        assert_eq!(
+            std::fs::read_to_string(stale_staging.join("user-file.txt")).unwrap(),
+            "staging user data",
+            "a stale staging directory must never be deleted or adopted"
+        );
+        assert_eq!(
+            std::fs::read_to_string(stale_backup.join("user-file.txt")).unwrap(),
+            "backup user data",
+            "a stale backup directory must never be deleted or adopted"
+        );
+        let _ = device._dir;
+    }
+
+    /// ② Update pre-checks refuse when the library copy, an agent copy, or
+    /// the recorded hash is not exactly what was deployed — and every
+    /// refusal leaves all content untouched.
+    #[test]
+    fn update_rejects_modified_library_or_copies() {
+        let _guard = central_repo::test_base_dir_lock();
+        let manager = manager_fixture();
+        let device = device_fixture();
+        let _override = OverrideGuard::set(&device.base);
+        device.store.set_setting("sync_mode", "copy").unwrap();
+        authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
+        let agent_root2 = device._dir.path().join("agent-skills-2");
+        std::fs::create_dir_all(&agent_root2).unwrap();
+        authorize_agent(&device.store, "claude_code", &agent_root2).unwrap();
+        let (channel_url, skill_url, _daemon) = channel_and_source(manager._dir.path(), "demo-skill");
+        pair(&device, &manager);
+        let config = SignedExecutorConfig::new(
+            channel_url.clone(), BRANCH.to_string(), TARGET_DEVICE.to_string(),
+        );
+
+        // Install to both agents.
+        for agent in ["codex", "claude_code"] {
+            let payload = deploy_payload(&manager, &skill_url, agent, "demo-skill");
+            publish_command(&manager, &channel_url, &payload);
+            let report = run_signed_once(&device.store, &config).unwrap();
+            assert_eq!(report.executed, 1, "{agent}: {report:#?}");
+        }
+
+        // Scenario A: the user edits the central library copy.
+        let library = device.base.join("skills").join("demo-skill");
+        std::fs::write(library.join("SKILL.md"), "# my library edits").unwrap();
+        let payload = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
+        publish_command(&manager, &channel_url, &payload);
+        let report = run_signed_once(&device.store, &config).unwrap();
+        assert_eq!(report.rejected, 1, "library modified: {report:#?}");
+        assert_eq!(
+            std::fs::read_to_string(library.join("SKILL.md")).unwrap(),
+            "# my library edits",
+            "library edits must survive the refusal"
+        );
+
+        // Scenario B: restore the library, then edit an agent copy.
+        std::fs::write(library.join("SKILL.md"), "# v1").unwrap();
+        let claude_copy = agent_root2.join("demo-skill").join("SKILL.md");
+        std::fs::write(&claude_copy, "# my agent edits").unwrap();
+        publish_command(&manager, &channel_url, &payload);
+        let report = run_signed_once(&device.store, &config).unwrap();
+        assert_eq!(report.rejected, 1, "agent copy modified: {report:#?}");
+        assert_eq!(
+            std::fs::read_to_string(&claude_copy).unwrap(),
+            "# my agent edits",
+            "agent edits must survive the refusal"
+        );
+
+        // Scenario C: wipe a recorded hash; the update must refuse.
+        let skill = device.store
+            .get_skill_by_central_path(library.to_string_lossy().as_ref())
+            .unwrap()
+            .unwrap();
+        let targets = device.store.get_targets_for_skill(&skill.id).unwrap();
+        for row in &targets {
+            if row.tool == "codex" {
+                device.store.delete_target(&skill.id, "codex").unwrap();
+                device.store.insert_target(&SkillTargetRecord {
+                    id: row.id.clone(),
+                    skill_id: row.skill_id.clone(),
+                    tool: row.tool.clone(),
+                    target_path: row.target_path.clone(),
+                    mode: row.mode.clone(),
+                    status: "ok".to_string(),
+                    synced_at: row.synced_at,
+                    last_error: None,
+                    source_hash: None,
+                }).unwrap();
+            }
+        }
+        publish_command(&manager, &channel_url, &payload);
+        let report = run_signed_once(&device.store, &config).unwrap();
+        assert_eq!(report.rejected, 1, "hash missing: {report:#?}");
+        let _ = device._dir;
+    }
+
+    /// ③④ Push failure then recovery: the durable receipt is re-published
+    /// (never re-executed), no contradictory unknown appears, and an
+    /// expired receipt is re-signed so the manager can verify it.
+    #[test]
+    fn push_failure_recovery_and_expired_re_signing() {
+        let _guard = central_repo::test_base_dir_lock();
+        let manager = manager_fixture();
+        let device = device_fixture();
+        let _override = OverrideGuard::set(&device.base);
+        device.store.set_setting("sync_mode", "copy").unwrap();
+        authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
+        let (channel_url, skill_url, _daemon) = channel_and_source(manager._dir.path(), "demo-skill");
+        pair(&device, &manager);
+        let config = SignedExecutorConfig::new(
+            channel_url.clone(), BRANCH.to_string(), TARGET_DEVICE.to_string(),
+        );
+
+        let payload = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
+        publish_command(&manager, &channel_url, &payload);
+        let report = run_signed_once(&device.store, &config).unwrap();
+        assert_eq!(report.executed, 1, "{report:#?}");
+        assert_eq!(report.receipts_published, 1, "{report:#?}");
+
+        // Inject a push failure the way a concurrent writer would: move the
+        // channel ref forward so the device's next push is non-fast-forward.
+        let channel_dir = manager._dir.path().join("channel.git");
+        let diverged = manager._dir.path().join("diverged");
+        std::fs::create_dir_all(diverged.join("demo-skill")).unwrap();
+        std::fs::write(diverged.join("demo-skill").join("SKILL.md"), "# diverged").unwrap();
+        git(&diverged, &["init", "-b", "main"]);
+        git(&diverged, &["add", "-A"]);
+        git(&diverged, &["commit", "-m", "diverged"]);
+        git(&diverged, &["push", channel_dir.to_string_lossy().as_ref(), "main"]);
+
+        // Re-run: the command replays as skipped, and the device refreshes
+        // its channel view before pushing the receipt again.
+        let report2 = run_signed_once(&device.store, &config).unwrap();
+        assert_eq!(report2.executed, 0, "no re-execution on replay: {report2:#?}");
+        let receipts = signed_channel::fetch_signed_receipts(&channel_url, BRANCH, TARGET_DEVICE).unwrap();
+        assert_eq!(receipts.len(), 1, "the receipt reached the channel after retry");
+        let verified = verify_receipt(&receipts[0], &device.pubkey);
+        assert_eq!(verified.status, RECEIPT_STATUS_SUCCESS);
+        assert_ne!(verified.status, RECEIPT_STATUS_UNKNOWN);
+
+        // ⑥ An expired receipt is re-signed under a fresh window: same
+        // instruction id and result, but a verifiable current signature.
+        let identity = device_identity::ensure_identity(&device.store).unwrap();
+        let expired = SignedReceiptPayload {
+            schema: RECEIPT_SCHEMA,
+            instruction_id: "cmd-expired-fixture".to_string(),
+            status: RECEIPT_STATUS_SUCCESS.to_string(),
+            reason: None,
+            skill_name: Some("demo-skill".to_string()),
+            agent_key: Some("codex".to_string()),
+            target_path: None,
+            executor_version: "fixture".to_string(),
+            finished_at: chrono::Utc::now().timestamp(),
+        };
+        let payload_json = serde_json::to_string(&expired).unwrap();
+        let signed = identity
+            .sign_message(MessageKind::Receipt, payload_json.clone().into_bytes(), chrono::Utc::now().timestamp(), 1)
+            .unwrap();
+        let message = SignedChannelMessage {
+            envelope: signed.envelope,
+            signature: hex::encode(signed.signature),
+            payload_json,
+        };
+        enqueue_receipt_and_clear_ledger(&device.store, "cmd-expired-fixture", &message).unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        let sent = resend_pending_receipts(&device.store, &config).unwrap();
+        assert_eq!(sent, 1, "the expired receipt must be re-signed and pushed");
+        let receipts = signed_channel::fetch_signed_receipts(&channel_url, BRANCH, TARGET_DEVICE).unwrap();
+        let expired_receipt = receipts.iter().find(|r| {
+            r.envelope.message_id == message.envelope.message_id
+        }).expect("expired receipt must have been re-published");
+        let verified = verify_receipt(expired_receipt, &device.pubkey);
+        assert_eq!(verified.status, RECEIPT_STATUS_SUCCESS);
+        assert_eq!(verified.instruction_id, "cmd-expired-fixture");
+
+        device.store.with_conn(|conn| {
+            let outbox: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM signed_receipt_outbox_v1",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(outbox, 0);
+            let ledger: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM signed_execution_ledger_v1",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(ledger, 0);
+            Ok(())
+        }).unwrap();
+        let _ = device._dir;
+    }
 }
