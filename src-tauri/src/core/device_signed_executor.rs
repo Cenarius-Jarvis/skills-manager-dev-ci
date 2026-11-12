@@ -468,7 +468,7 @@ fn execute_deploy(
                     "up_to_date",
                 )?;
                 Ok(())
-            });
+            })();
             if let Err(err) = swap_result {
                 // Roll the library back; the update can be retried with the
                 // same pinned command.
