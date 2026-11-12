@@ -91,7 +91,7 @@ fn valid_key_id(key_id: &str) -> bool {
 }
 
 /// Read the stored identity payload for one device from the OS keychain.
-#[cfg(not(test))]
+#[cfg(all(not(test), not(target_os = "linux")))]
 fn stored_identity_payload(device_id: &str) -> Result<Option<String>> {
     let entry = keyring::Entry::new(KEYRING_SERVICE, device_id)
         .context("failed to open the device identity keychain entry")?;
