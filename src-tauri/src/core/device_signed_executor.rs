@@ -652,10 +652,45 @@ fn execute_deploy(
             }
             // ... and extend to the requested agent when it is a new one.
             if !touched_requested {
-                let actual = sync_engine::sync_skill(&library_path, &target, mode, ReplacePolicy::NoClobber)
-                    .context("deploying into the agent directory failed")?;
+                // The requested agent has no managed copy yet: record the
+                // target before touching it, like every other target.
+                store.with_conn(|conn| {
+                    initialize_update_operations(conn)?;
+                    record_update_target(
+                        conn, &record.operation_id, agent_key, &target.to_string_lossy(),
+                        None, Some(&staged_hash), TARGET_PHASE_PENDING,
+                    )
+                })?;
+                let sync_result = sync_engine::sync_skill(&library_path, &target, mode, ReplacePolicy::NoClobber);
+                let actual = match sync_result {
+                    Ok(actual) => actual,
+                    Err(err) => {
+                        store.with_conn(|conn| {
+                            record_update_target(
+                                conn, &record.operation_id, agent_key, &target.to_string_lossy(),
+                                None, Some(&staged_hash), TARGET_PHASE_FAILED,
+                            )
+                        })?;
+                        record.phase = UPDATE_PHASE_FAILED.to_string();
+                        record.updated_at = chrono::Utc::now().timestamp();
+                        record_update_operation(store, &record)?;
+                        return Err(err).context(format!(
+                            "deploying into the agent directory {} failed; the operation record lists the targets that were and were not refreshed",
+                            target.display()
+                        ));
+                    }
+                };
                 let deployed_hash = content_hash::hash_directory(&target)?;
                 if deployed_hash != staged_hash {
+                    store.with_conn(|conn| {
+                        record_update_target(
+                            conn, &record.operation_id, agent_key, &target.to_string_lossy(),
+                            None, Some(&staged_hash), TARGET_PHASE_FAILED,
+                        )
+                    })?;
+                    record.phase = UPDATE_PHASE_FAILED.to_string();
+                    record.updated_at = chrono::Utc::now().timestamp();
+                    record_update_operation(store, &record)?;
                     bail!("agent copy does not match the library copy; preserved for inspection");
                 }
                 store.insert_target(&SkillTargetRecord {
@@ -668,6 +703,12 @@ fn execute_deploy(
                     synced_at: Some(chrono::Utc::now().timestamp_millis()),
                     last_error: None,
                     source_hash: Some(staged_hash.clone()),
+                })?;
+                store.with_conn(|conn| {
+                    record_update_target(
+                        conn, &record.operation_id, agent_key, &target.to_string_lossy(),
+                        None, Some(&staged_hash), TARGET_PHASE_REFRESHED,
+                    )
                 })?;
             }
             // Everything refreshed: the record proves this backup belongs to
@@ -1176,13 +1217,13 @@ pub fn run_signed_once(store: &SkillStore, config: &SignedExecutorConfig) -> Res
     // Commands that were claimed but never prepared were never executed.
     // Recover them through the same production path: resume the signed
     // bytes, prepare+ledger atomically, execute once, answer.
-    let unprepared_ids: Vec<String> = store.with_conn(|conn| {
-        device_pairing::list_unprepared_claims(conn, &config.device_id, now)
+    let unpaired_claims: Vec<(String, String)> = store.with_conn(|conn| {
+        device_pairing::list_unprepared_claims(conn, now)
     })?;
-    for claim_id in unprepared_ids {
+    for (manager_device, claim_id) in unpaired_claims {
         let claimed = match store.with_conn_mut(|conn| {
             device_pairing::resume_unprepared_claim(
-                conn, &config.device_id, &claim_id, MessageKind::Command, now,
+                conn, &manager_device, &claim_id, MessageKind::Command, now,
             )
         }) {
             Ok(Some(claimed)) => claimed,
@@ -2019,8 +2060,9 @@ mod tests {
         assert_eq!(report2.rejected, 1, "{report2:#?}");
         assert!(deployed.exists(), "an unverifiable directory must survive");
         let receipts = signed_channel::fetch_signed_receipts(&channel_url, BRANCH, TARGET_DEVICE).unwrap();
-        assert_eq!(receipts.len(), 1);
-        let receipt = verify_receipt(&receipts[0], &device.pubkey);
+        assert_eq!(receipts.len(), 2, "deploy success + undeploy rejection");
+        let receipt = verify_receipt(&receipts[1], &device.pubkey);
+        assert_eq!(receipt.status, RECEIPT_STATUS_REJECTED);
         assert!(receipt.reason.as_deref().unwrap_or("").contains("no recorded content hash"));
         let _ = device._dir;
     }
@@ -2475,8 +2517,11 @@ mod tests {
             channel_url.clone(), BRANCH.to_string(), TARGET_DEVICE.to_string(),
         );
 
-        // A rejecting pre-receive hook: clone and fetch work, every push
-        // fails — a genuine channel-side failure on the production path.
+        let payload = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
+        // The instruction push succeeds first; then a rejecting pre-receive
+        // hook makes every FURTHER push fail — a genuine channel-side
+        // failure on the production path, hitting only the receipt push.
+        publish_command(&manager, &channel_url, &payload);
         let hook = manager._dir.path().join("channel.git").join("hooks").join("pre-receive");
         std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
         #[cfg(unix)]
@@ -2484,9 +2529,6 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-
-        let payload = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
-        publish_command(&manager, &channel_url, &payload);
         let report = run_signed_once(&device.store, &config).unwrap();
         assert_eq!(report.executed, 1, "execution happened: {report:#?}");
         assert_eq!(report.receipts_published, 0, "the push must have failed: {report:#?}");

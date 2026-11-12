@@ -276,20 +276,27 @@ where
 /// leaves behind. They were never executed, so recovery may run them once.
 /// Bound mirrors the recovery inventory; expired claims are excluded (they
 /// can no longer be verified, and `list_command_recovery` surfaces them).
-pub fn list_unprepared_claims(
-    conn: &Connection, device_id: &str, now: i64,
-) -> Result<Vec<String>> {
-    if !valid_id(device_id) { bail!("invalid device id"); }
+/// Claims from every locally paired manager whose command was received but
+/// never prepared — the state a crash between claim and prepare leaves
+/// behind. The bindings' device id is the SIGNING manager (the envelope's
+/// device id), not the receiving device, so the query keys off paired
+/// managers rather than one id. Returned as (manager device id, message id);
+/// expired claims are excluded (`list_command_recovery` surfaces them).
+pub fn list_unprepared_claims(conn: &Connection, now: i64) -> Result<Vec<(String, String)>> {
     let mut stmt = conn.prepare(
-        "SELECT b.message_id FROM verified_message_bindings_v1 b
+        "SELECT b.device_id, b.message_id FROM verified_message_bindings_v1 b
          JOIN verified_message_inbox_v1 i
            ON i.device_id = b.device_id AND i.message_id = b.message_id
-         WHERE b.device_id = ?1 AND b.purpose = 'command' AND b.prepared = 0
-               AND b.expires_at > ?2
+         WHERE b.purpose = 'command' AND b.prepared = 0 AND b.expires_at > ?1
+               AND EXISTS (SELECT 1 FROM device_trusted_keys_v1 k
+                           WHERE k.device_id = b.device_id AND k.purpose = 'command'
+                                 AND k.active = 1)
          ORDER BY b.issued_at, b.message_id LIMIT 257",
     )?;
     let rows = stmt
-        .query_map(params![device_id, now], |row| row.get::<_, String>(0))?
+        .query_map(params![now], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     if rows.len() > 256 { bail!("unprepared claim list exceeds limit; pagination required"); }
     Ok(rows)
