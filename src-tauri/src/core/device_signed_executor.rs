@@ -1517,6 +1517,118 @@ mod tests {
             assert_eq!(count, 0, "outbox must drain after a successful push");
             Ok(())
         }).unwrap();
+
+    /// ② An undeploy against a real directory whose recorded hash is
+    /// missing must refuse: without a baseline there is no way to prove
+    /// the directory is untouched managed content.
+    #[test]
+    fn undeploy_missing_hash_is_refused() {
+        let _guard = central_repo::test_base_dir_lock();
+        let manager = manager_fixture();
+        let device = device_fixture();
+        let _override = OverrideGuard::set(&device.base);
+        device.store.set_setting("sync_mode", "copy").unwrap();
+        authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
+        let (channel_url, skill_url, _daemon) = channel_and_source(manager._dir.path(), "demo-skill");
+        pair(&device, &manager);
+        let config = SignedExecutorConfig::new(
+            channel_url.clone(), BRANCH.to_string(), TARGET_DEVICE.to_string(),
+        );
+
+        let payload = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
+        publish_command(&manager, &channel_url, &payload);
+        let report = run_signed_once(&device.store, &config).unwrap();
+        assert_eq!(report.executed, 1, "{report:#?}");
+        let deployed = device.agent_root.join("demo-skill");
+        assert!(deployed.exists());
+
+        // Wipe the recorded hash from the deployment record.
+        let skill = device.store
+            .get_skill_by_central_path(
+                device.base.join("skills").join("demo-skill").to_string_lossy().as_ref(),
+            ).unwrap().unwrap();
+        let targets = device.store.get_targets_for_skill(&skill.id).unwrap();
+        let row = &targets[0];
+        device.store.delete_target(&skill.id, "codex").unwrap();
+        device.store.insert_target(&SkillTargetRecord {
+            id: row.id.clone(),
+            skill_id: row.skill_id.clone(),
+            tool: row.tool.clone(),
+            target_path: row.target_path.clone(),
+            mode: row.mode.clone(),
+            status: "ok".to_string(),
+            synced_at: row.synced_at,
+            last_error: None,
+            source_hash: None,
+        }).unwrap();
+
+        let remove = undeploy_payload(&manager, "codex", "demo-skill");
+        publish_command(&manager, &channel_url, &remove);
+        let report2 = run_signed_once(&device.store, &config).unwrap();
+        assert_eq!(report2.rejected, 1, "{report2:#?}");
+        assert!(deployed.exists(), "an unverifiable directory must survive");
+        let receipts = signed_channel::fetch_signed_receipts(&channel_url, BRANCH, TARGET_DEVICE).unwrap();
+        assert_eq!(receipts.len(), 1);
+        let receipt = verify_receipt(&receipts[0], &device.pubkey);
+        assert!(receipt.reason.as_deref().unwrap_or("").contains("no recorded content hash"));
+        let _ = device._dir;
+    }
+
+    /// ④ A crash between "execution started" and "receipt persisted" leaves
+    /// an explicit unknown receipt on the channel — and the command itself
+    /// is never re-executed (its replay claim was already consumed).
+    #[test]
+    fn crash_window_shows_unknown() {
+        let _guard = central_repo::test_base_dir_lock();
+        let manager = manager_fixture();
+        let device = device_fixture();
+        let _override = OverrideGuard::set(&device.base);
+        device.store.set_setting("sync_mode", "copy").unwrap();
+        authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
+        let (channel_url, skill_url, _daemon) = channel_and_source(manager._dir.path(), "demo-skill");
+        pair(&device, &manager);
+        let config = SignedExecutorConfig::new(
+            channel_url.clone(), BRANCH.to_string(), TARGET_DEVICE.to_string(),
+        );
+
+        let payload = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
+        publish_command(&manager, &channel_url, &payload);
+
+        // Simulate the crash: claim and prepare the command (exactly as a
+        // run does), mark execution started, then "die" before executing.
+        let queued = signed_channel::fetch_signed_commands(&channel_url, BRANCH, TARGET_DEVICE).unwrap();
+        assert_eq!(queued.len(), 1);
+        let lost_id = queued[0].envelope.message_id.clone();
+        let prepared = claim_command(&device.store, &queued[0], chrono::Utc::now().timestamp())
+            .unwrap()
+            .expect("the paired command must claim");
+        let _ = prepared;
+        device.store.with_conn(|conn| {
+            mark_execution_started(conn, &lost_id)
+        }).unwrap();
+        // The crash: no execution, no receipt, no cleanup.
+
+        // The restarted run answers for the lost attempt ...
+        let report = run_signed_once(&device.store, &config).unwrap();
+        assert!(report.receipts_published >= 1, "{report:#?}");
+        let receipts = signed_channel::fetch_signed_receipts(&channel_url, BRANCH, TARGET_DEVICE).unwrap();
+        assert!(receipts.iter().any(|r| {
+            let payload = verify_receipt(r, &device.pubkey);
+            payload.status == RECEIPT_STATUS_UNKNOWN && payload.instruction_id == lost_id
+        }), "an unknown receipt must name the lost command");
+
+        // ... and the ledger is clear again, so nothing unknown lingers.
+        device.store.with_conn(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM signed_execution_ledger_v1",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0);
+            Ok(())
+        }).unwrap();
         let _ = device._dir;
     }
 }
