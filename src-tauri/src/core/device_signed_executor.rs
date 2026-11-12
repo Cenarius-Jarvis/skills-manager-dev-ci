@@ -202,6 +202,11 @@ fn claim_command(
             Ok(Some(claimed)) => match prepare_claimed_command(conn, claimed, now) {
                 Ok(prepared) => Ok(Some(prepared)),
                 Err(err) => {
+                    #[cfg(test)]
+                    println!(
+                        "claim diag: {} prepare failed: {err:#}",
+                        message.envelope.message_id
+                    );
                     log::warn!(
                         "signed command {} could not be prepared: {err}",
                         message.envelope.message_id
@@ -217,6 +222,11 @@ fn claim_command(
                 Ok(None)
             }
             Err(err) => {
+                #[cfg(test)]
+                println!(
+                    "claim diag: {} verification failed: {err:#}",
+                    message.envelope.message_id
+                );
                 log::warn!(
                     "signed command {} failed verification against paired keys: {err}",
                     message.envelope.message_id
@@ -372,7 +382,10 @@ fn execute_deploy(
                 .context("refreshing the library copy failed")?;
             let central = installed.central_path;
             if central != library_path {
-                bail!("refreshed path drifted from the requested library location");
+                bail!(
+                    "refreshed path drifted from the requested library location (installed {:?}, requested {:?})",
+                    central, library_path
+                );
             }
             let hash = content_hash::hash_directory(&central)?;
             if hash != installed.content_hash {
@@ -1232,10 +1245,10 @@ mod tests {
         let device = device_fixture();
         let _override = OverrideGuard::set(&device.base);
         authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
-        let (channel_url, _skill_url) = channel_and_source(manager._dir.path(), "demo-skill");
+        let (channel_url, skill_url, _daemon) = channel_and_source(manager._dir.path(), "demo-skill");
         pair(&device, &manager);
 
-        let mut payload = deploy_payload(&manager, "git://127.0.0.1/demo-skill", "codex", "demo-skill");
+        let mut payload = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
         payload.skill_commit = Some("0".repeat(40));
         publish_command(&manager, &channel_url, &payload);
 
