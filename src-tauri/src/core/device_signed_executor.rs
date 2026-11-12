@@ -1977,6 +1977,8 @@ mod tests {
             assert_eq!(count, 0, "outbox must drain after a successful push");
             Ok(())
         }).unwrap();
+        let _ = device._dir;
+    }
 
     /// ② An undeploy against a real directory whose recorded hash is
     /// missing must refuse: without a baseline there is no way to prove
@@ -2032,8 +2034,6 @@ mod tests {
         let receipt = verify_receipt(&receipts[0], &device.pubkey);
         assert!(receipt.reason.as_deref().unwrap_or("").contains("no recorded content hash"));
         let _ = device._dir;
-    }
-
     }
 
     /// ④ A crash between "execution started" and "receipt persisted" leaves
