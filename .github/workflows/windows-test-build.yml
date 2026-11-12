@@ -1,4 +1,4 @@
-name: Test builds label 4 (Windows installer + Linux CLI)
+name: Test builds label 5 (Windows installer + Linux desktop + CLI)
 # Deliberately narrow trigger, same scheme as two-device-simulation.yml:
 # only pushes to this branch that touch this workflow file build, so a
 # release is an explicit act — bump the build label below to cut a new
