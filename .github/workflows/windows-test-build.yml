@@ -1,4 +1,4 @@
-name: Test builds label 8 (crash ledger, durable receipts, update guards)
+name: Test builds label 9 (atomic prepare, per-target recovery, real push failure)
 # Deliberately narrow trigger, same scheme as two-device-simulation.yml:
 # only pushes to this branch that touch this workflow file build, so a
 # release is an explicit act — bump the build label below to cut a new
