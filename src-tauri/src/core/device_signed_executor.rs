@@ -2339,8 +2339,8 @@ mod tests {
             device_pairing::verify_and_claim_paired(
                 conn, &message.envelope, &signature, &message.payload_json.as_bytes(),
                 &manager_id, MessageKind::Command, chrono::Utc::now().timestamp(),
-            ).unwrap().unwrap();
-        });
+            )
+        }).unwrap().unwrap();
         // The crash: no prepare, no ledger, no execution.
 
         // The restarted run recovers the claim and executes it once.
