@@ -32,6 +32,10 @@ struct StoredIdentity {
     /// PKCS#8 document for the Ed25519 key pair, hex-encoded.
     pkcs8_hex: String,
     key_id: String,
+    #[serde(default)]
+    /// Bound at save time; a payload read for a different device id is
+    /// treated as absent. Older entries without the field stay loadable.
+    device_id: String,
     created_at: i64,
 }
 
@@ -99,13 +103,60 @@ fn stored_identity_payload(device_id: &str) -> Result<Option<String>> {
 }
 
 /// Persist the identity payload for one device to the OS keychain.
-#[cfg(not(test))]
+#[cfg(all(not(test), not(target_os = "linux")))]
 fn save_identity_payload(device_id: &str, payload: &str) -> Result<()> {
     let entry = keyring::Entry::new(KEYRING_SERVICE, device_id)
         .context("failed to open the device identity keychain entry")?;
     entry
         .set_password(payload)
         .context("failed to store the device identity in the OS keychain")
+}
+
+/// Linux: servers and headless boxes frequently have no Secret Service
+/// daemon, so the identity is stored as an AES-256-GCM encrypted file in the
+/// data directory instead — the same protection level as every other secret
+/// in this app (`crypto::load_or_create_key` keyed `.secret.key`).
+#[cfg(all(not(test), target_os = "linux"))]
+fn identity_secret_file() -> Result<std::path::PathBuf> {
+    Ok(super::central_repo::base_dir().join("device-identity.enc"))
+}
+
+#[cfg(all(not(test), target_os = "linux"))]
+fn stored_identity_payload(device_id: &str) -> Result<Option<String>> {
+    let path = identity_secret_file()?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let key = super::crypto::load_or_create_key(
+        &super::central_repo::base_dir().join(".secret.key"),
+    )?;
+    let payload = super::crypto::decrypt(&key, &std::fs::read_to_string(&path)?)
+        .context("stored device identity file is undecryptable")?;
+    let stored: StoredIdentity = serde_json::from_str(&payload)
+        .context("stored device identity is not valid JSON")?;
+    if !stored.device_id.is_empty() && stored.device_id != device_id {
+        // The file belongs to another local device id; ignore it entirely
+        // rather than signing as the wrong identity.
+        return Ok(None);
+    }
+    Ok(Some(payload))
+}
+
+#[cfg(all(not(test), target_os = "linux"))]
+fn save_identity_payload(device_id: &str, payload: &str) -> Result<()> {
+    let key = super::crypto::load_or_create_key(
+        &super::central_repo::base_dir().join(".secret.key"),
+    )?;
+    let encrypted = super::crypto::encrypt(&key, payload)?;
+    let path = identity_secret_file()?;
+    std::fs::write(&path, encrypted).context("failed to write the device identity file")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .context("failed to restrict the device identity file permissions")?;
+    }
+    Ok(())
 }
 
 /// Tests use a process-level map: keyring's own mock backend keeps state
@@ -162,6 +213,7 @@ pub fn ensure_identity(store: &SkillStore) -> Result<DeviceIdentity> {
                 version: 1,
                 pkcs8_hex: hex::encode(pkcs8_document.as_ref()),
                 key_id: identity.key_id.clone(),
+                device_id: device_id.clone(),
                 created_at: now_secs(),
             };
             save_identity_payload(&device_id, &serde_json::to_string(&stored)?)?;

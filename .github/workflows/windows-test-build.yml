@@ -1,4 +1,4 @@
-name: Windows test build (signed commands end to end, label 3)
+name: Test builds label 4 (Windows installer + Linux CLI)
 # Deliberately narrow trigger, same scheme as two-device-simulation.yml:
 # only pushes to this branch that touch this workflow file build, so a
 # release is an explicit act — bump the build label below to cut a new
@@ -12,7 +12,7 @@ on:
 permissions:
   contents: read
 jobs:
-  build:
+  build-windows:
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -34,5 +34,49 @@ jobs:
         with:
           name: skills-manager-test-windows-${{ github.sha }}
           path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  build-linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: src-tauri
+      - name: Install Linux runner dependencies
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Build Linux packages (deb + AppImage, isolated test build)
+        run: npm run tauri:build -- --config src-tauri/tauri.test-build.conf.json --features test-build --bundles deb appimage
+      - name: Build the Linux CLI binary
+        run: cargo build --locked --release --manifest-path src-tauri/Cargo.toml --bin skills-manager-cli
+      - name: Package the Linux CLI
+        shell: bash
+        run: |
+          mkdir -p package
+          cp src-tauri/target/release/skills-manager-cli package/
+          tar -czf skills-manager-cli-linux.tar.gz -C package skills-manager-cli
+      - name: Upload Linux desktop packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: skills-manager-test-linux
+          path: |
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload Linux CLI
+        uses: actions/upload-artifact@v4
+        with:
+          name: skills-manager-cli-linux
+          path: skills-manager-cli-linux.tar.gz
           if-no-files-found: error
           retention-days: 14
