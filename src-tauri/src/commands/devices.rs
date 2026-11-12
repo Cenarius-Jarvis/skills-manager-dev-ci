@@ -458,11 +458,25 @@ fn create_signed_instruction_internal(
         skill_url: trim(skill_url),
         skill_branch: trim(skill_branch),
         skill_subpath: trim(skill_subpath),
+        skill_commit,
         skill_name: trim(skill_name),
         agent_key: agent_key.trim().to_string(),
         issued_by: identity.device_id.clone(),
         issued_by_name: Some(devices::local_device_name(store)),
         target_device: device_id.trim().to_string(),
+    };
+    // Pin the exact revision the operator is publishing: resolve the
+    // source's current head now, and the device refuses any other commit.
+    let skill_commit = match action.trim() {
+        devices::ACTION_DEPLOY => {
+            let url = skill_url.map(|u| u.trim()).filter(|u| !u.is_empty()).ok_or_else(|| {
+                AppError::invalid_input("deploy requires a skill repository URL")
+            })?;
+            Some(with_retry(|| {
+                devices::resolve_remote_head(url, skill_branch.as_deref())
+            }).map_err(git_err)?)
+        }
+        _ => None,
     };
     let now = chrono::Utc::now().timestamp();
     let ttl = ttl_secs.unwrap_or(signed_channel::DEFAULT_COMMAND_TTL_SECS);

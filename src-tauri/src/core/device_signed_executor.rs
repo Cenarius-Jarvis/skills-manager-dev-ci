@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use super::central_repo;
 use super::content_hash;
 use super::device_envelope::MessageKind;
+use super::git_fetcher;
 use super::device_identity::{self, DeviceIdentity};
 use super::device_pairing::{
     prepare_claimed_command, verify_and_claim_paired, PreparedDeviceCommand,
@@ -276,80 +277,176 @@ fn execute_deploy(
         .context("agent is not authorized on this device")?;
 
     let library_path = library_skill_path(name)?;
-    if library_path.exists() {
-        bail!(
-            "skill {name:?} already exists in this device's library; update flow is not enabled"
-        );
-    }
+    let existing = store
+        .get_skill_by_central_path(&library_path.to_string_lossy())?;
 
     let _lock = RepoLock::acquire_foreground("signed command deploy")?;
     let (_clone_tmp, clone_root) =
         devices::fetch_skill_source(payload.skill_url.as_deref().context("deploy needs a skill_url")?, payload.skill_branch.as_deref())?;
+    // The command pins a full commit: the fetched tree must be exactly that
+    // revision, or nothing here deploys.
+    let head = git_fetcher::get_head_revision(&clone_root)?;
+    if let Some(pinned) = &payload.skill_commit {
+        if head != *pinned {
+            bail!("fetched revision {head} does not match the pinned commit {pinned}");
+        }
+    }
     let skill_dir = resolve_skill_dir(&clone_root, payload.skill_subpath.as_deref())?;
 
-    let installed = installer::install_from_git_dir(&skill_dir, Some(name))
-        .context("installing the fetched skill into the central library failed")?;
-    let central = installed.central_path;
-    if central != library_path {
-        bail!("installed path drifted from the requested library location");
-    }
-
-    // Verify the library copy hash before deploying it onward.
-    let hash = content_hash::hash_directory(&central)?;
-    if hash != installed.content_hash {
-        bail!("library copy hash changed right after install");
-    }
-
+    let mode = sync_engine::sync_mode_for_tool(agent_key, None);
     std::fs::create_dir_all(&root).context("authorized agent root is unavailable")?;
     let root_canonical = std::fs::canonicalize(&root).context("authorized agent root is unavailable")?;
     let target = root_canonical.join(name);
-    let mode = sync_engine::sync_mode_for_tool(agent_key, None);
-    let actual = sync_engine::sync_skill(&central, &target, mode, ReplacePolicy::NoClobber)
-        .context("deploying into the agent directory failed")?;
-    let deployed_hash = content_hash::hash_directory(&target)?;
-    if deployed_hash != hash {
-        bail!("agent copy does not match the library copy; preserved for inspection");
-    }
 
-    let skill_id = uuid::Uuid::new_v4().to_string();
-    let record = SkillRecord {
-        id: skill_id.clone(),
-        name: installed.name.clone(),
-        description: installed.description.clone(),
-        source_type: "git".to_string(),
-        source_ref: payload.skill_url.clone(),
-        source_ref_resolved: payload.skill_url.clone(),
-        source_subpath: payload.skill_subpath.clone(),
-        source_branch: payload.skill_branch.clone(),
-        source_revision: None,
-        remote_revision: None,
-        central_path: central.to_string_lossy().to_string(),
-        content_hash: Some(hash.clone()),
-        enabled: true,
-        created_at: chrono::Utc::now().timestamp(),
-        updated_at: chrono::Utc::now().timestamp(),
-        status: "ok".to_string(),
-        update_status: "up_to_date".to_string(),
-        last_checked_at: None,
-        last_check_error: None,
-    };
-    store.insert_skill(&record).context("recording the library skill failed")?;
-    let target_row = SkillTargetRecord {
-        id: uuid::Uuid::new_v4().to_string(),
-        skill_id,
-        tool: agent_key.to_string(),
-        target_path: target.to_string_lossy().to_string(),
-        mode: actual.as_str().to_string(),
-        status: "ok".to_string(),
-        synced_at: Some(chrono::Utc::now().timestamp_millis()),
-        last_error: None,
-        source_hash: Some(hash),
-    };
-    store.insert_target(&target_row)
-        .context("recording the deployment failed; target preserved for inspection")?;
-    sync_metadata::write_all_from_db_unlocked(store)
-        .context("publishing skill metadata failed; deployment preserved")?;
-    Ok(target)
+    match existing {
+        None => {
+            let installed = installer::install_from_git_dir(&skill_dir, Some(name))
+                .context("installing the fetched skill into the central library failed")?;
+            let central = installed.central_path;
+            if central != library_path {
+                bail!("installed path drifted from the requested library location");
+            }
+            let hash = content_hash::hash_directory(&central)?;
+            if hash != installed.content_hash {
+                bail!("library copy hash changed right after install");
+            }
+            let actual = sync_engine::sync_skill(&central, &target, mode, ReplacePolicy::NoClobber)
+                .context("deploying into the agent directory failed")?;
+            let deployed_hash = content_hash::hash_directory(&target)?;
+            if deployed_hash != hash {
+                bail!("agent copy does not match the library copy; preserved for inspection");
+            }
+            let skill_id = uuid::Uuid::new_v4().to_string();
+            let record = SkillRecord {
+                id: skill_id.clone(),
+                name: installed.name.clone(),
+                description: installed.description.clone(),
+                source_type: "git".to_string(),
+                source_ref: payload.skill_url.clone(),
+                source_ref_resolved: payload.skill_url.clone(),
+                source_subpath: payload.skill_subpath.clone(),
+                source_branch: payload.skill_branch.clone(),
+                source_revision: Some(head.clone()),
+                remote_revision: Some(head),
+                central_path: central.to_string_lossy().to_string(),
+                content_hash: Some(hash.clone()),
+                enabled: true,
+                created_at: chrono::Utc::now().timestamp(),
+                updated_at: chrono::Utc::now().timestamp(),
+                status: "ok".to_string(),
+                update_status: "up_to_date".to_string(),
+                last_checked_at: None,
+                last_check_error: None,
+            };
+            store.insert_skill(&record).context("recording the library skill failed")?;
+            let target_row = SkillTargetRecord {
+                id: uuid::Uuid::new_v4().to_string(),
+                skill_id,
+                tool: agent_key.to_string(),
+                target_path: target.to_string_lossy().to_string(),
+                mode: actual.as_str().to_string(),
+                status: "ok".to_string(),
+                synced_at: Some(chrono::Utc::now().timestamp_millis()),
+                last_error: None,
+                source_hash: Some(hash),
+            };
+            store.insert_target(&target_row)
+                .context("recording the deployment failed; target preserved for inspection")?;
+            sync_metadata::write_all_from_db_unlocked(store)
+                .context("publishing skill metadata failed; deployment preserved")?;
+            Ok(target)
+        }
+        Some(skill) => {
+            // Update / multi-agent extension. Only skills this signed
+            // channel installed may be refreshed; anything the user
+            // installed from another source is protected.
+            let same_source = skill.source_type == "git"
+                && skill.source_ref.as_deref() == payload.skill_url.as_deref();
+            if !same_source {
+                bail!(
+                    "skill {name:?} is already installed from a different source ({}); refusing to overwrite",
+                    skill.source_ref.as_deref().unwrap_or("local material")
+                );
+            }
+            let installed = installer::install_from_git_dir(&skill_dir, Some(name))
+                .context("refreshing the library copy failed")?;
+            let central = installed.central_path;
+            if central != library_path {
+                bail!("refreshed path drifted from the requested library location");
+            }
+            let hash = content_hash::hash_directory(&central)?;
+            if hash != installed.content_hash {
+                bail!("library copy hash changed right after refresh");
+            }
+            store.update_skill_after_install(
+                &skill.id,
+                &installed.name,
+                installed.description.as_deref(),
+                Some(head.clone()),
+                Some(head.clone()),
+                Some(hash.clone()),
+                "up_to_date",
+            )?;
+
+            // Refresh every managed deployment of this skill ...
+            let rows = store.get_targets_for_skill(&skill.id)?;
+            let mut touched_requested = false;
+            for row in rows {
+                let row_target = PathBuf::from(&row.target_path);
+                let policy = ReplacePolicy::Recorded { mode: &row.mode };
+                let actual = sync_engine::sync_skill(
+                    &central,
+                    &row_target,
+                    sync_engine::sync_mode_for_tool(&row.tool, None),
+                    policy,
+                ).context("refreshing a managed deployment failed")?;
+                let row_hash = content_hash::hash_directory(&row_target)?;
+                if row_hash != hash {
+                    bail!("refreshed copy at {} does not match the library copy", row.target_path);
+                }
+                let row_tool = row.tool.clone();
+                let row_path = row.target_path.clone();
+                store.delete_target(&skill.id, &row_tool)?;
+                store.insert_target(&SkillTargetRecord {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    skill_id: skill.id.clone(),
+                    tool: row_tool,
+                    target_path: row_path,
+                    mode: actual.as_str().to_string(),
+                    status: "ok".to_string(),
+                    synced_at: Some(chrono::Utc::now().timestamp_millis()),
+                    last_error: None,
+                    source_hash: Some(hash.clone()),
+                })?;
+                if row.tool == agent_key {
+                    touched_requested = true;
+                }
+            }
+            // ... and extend to the requested agent when it is a new one.
+            if !touched_requested {
+                let actual = sync_engine::sync_skill(&central, &target, mode, ReplacePolicy::NoClobber)
+                    .context("deploying into the agent directory failed")?;
+                let deployed_hash = content_hash::hash_directory(&target)?;
+                if deployed_hash != hash {
+                    bail!("agent copy does not match the library copy; preserved for inspection");
+                }
+                store.insert_target(&SkillTargetRecord {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    skill_id: skill.id.clone(),
+                    tool: agent_key.to_string(),
+                    target_path: target.to_string_lossy().to_string(),
+                    mode: actual.as_str().to_string(),
+                    status: "ok".to_string(),
+                    synced_at: Some(chrono::Utc::now().timestamp_millis()),
+                    last_error: None,
+                    source_hash: Some(hash.clone()),
+                })?;
+            }
+            sync_metadata::write_all_from_db_unlocked(store)
+                .context("publishing skill metadata failed; deployment preserved")?;
+            Ok(target)
+        }
+    }
 }
 
 /// Undeploy: remove only a managed deployment recorded by a prior signed
@@ -372,6 +469,21 @@ fn execute_undeploy(store: &SkillStore, payload: &SignedCommandPayload) -> Resul
 
     let meta = std::fs::symlink_metadata(&target)
         .context("managed deployment directory is missing")?;
+    // A real directory may hold user edits since the deploy: only delete
+    // when its content still matches what this channel deployed. A symlink
+    // holds no user edits (the library copy stays), so links go freely.
+    if !meta.file_type().is_symlink() {
+        if let Some(recorded) = &known.source_hash {
+            let current = content_hash::hash_directory(&target)
+                .context("cannot hash the deployment directory; refusing to delete")?;
+            if current != *recorded {
+                bail!(
+                    "deployment directory was modified locally (content hash changed since deploy); \
+                     refusing to delete user changes"
+                );
+            }
+        }
+    }
     if meta.file_type().is_symlink() {
         // A symlink deployment: remove the link only, never the library
         // copy. Windows distinguishes directory links (remove_dir) from
@@ -405,11 +517,105 @@ fn execute_undeploy(store: &SkillStore, payload: &SignedCommandPayload) -> Resul
     Ok(target)
 }
 
+/// Receipts are durable before they are pushed: an entry is written when the
+/// execution result exists, deleted only after the signed receipt is on the
+/// channel. A retried run re-publishes pending entries — receipts are
+/// idempotent writes — but commands themselves are never re-executed: their
+/// replay ledger and consumed preparation slot are untouched by any of this.
+const RECEIPT_OUTBOX_TABLE: &str = "signed_receipt_outbox_v1";
+
+fn initialize_receipt_outbox(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(&format!(
+        "CREATE TABLE IF NOT EXISTS {RECEIPT_OUTBOX_TABLE} (
+            instruction_id TEXT NOT NULL PRIMARY KEY,
+            message_json TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL
+        );"
+    ))?;
+    Ok(())
+}
+
+/// Store a signed receipt so it survives a crash or network loss.
+fn enqueue_receipt(store: &SkillStore, message: &SignedChannelMessage) -> Result<()> {
+    let instruction_id = message.envelope.message_id.clone();
+    let message_json = serde_json::to_string(message)?;
+    store.with_conn(|conn| {
+        initialize_receipt_outbox(conn)?;
+        conn.execute(
+            &format!(
+                "INSERT INTO {RECEIPT_OUTBOX_TABLE} (instruction_id, message_json, attempts, created_at)
+                 VALUES (?1, ?2, 0, ?3)
+                 ON CONFLICT(instruction_id) DO UPDATE SET message_json = excluded.message_json"
+            ),
+            rusqlite::params![instruction_id, message_json, chrono::Utc::now().timestamp()],
+        )?;
+        Ok(())
+    })
+}
+
+/// Push every pending receipt again. Channel writes are idempotent, so a
+/// receipt the manager already read is harmlessly rewritten; execution is
+/// never repeated here — only the answer to it travels again.
+fn resend_pending_receipts(store: &SkillStore, config: &SignedExecutorConfig) -> Result<usize> {
+    let pending: Vec<(String, String)> = store.with_conn(|conn| {
+        initialize_receipt_outbox(conn)?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT instruction_id, message_json FROM {RECEIPT_OUTBOX_TABLE} ORDER BY created_at"
+        ))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    })?;
+    let mut sent = 0;
+    for (instruction_id, message_json) in pending {
+        let message: SignedChannelMessage = serde_json::from_str(&message_json)
+            .context("pending receipt is not valid JSON")?;
+        match signed_channel::publish_signed_receipt(
+            store, &config.url, &config.branch, &config.device_id, &message,
+        ) {
+            Ok(_) => {
+                store.with_conn(|conn| {
+                    conn.execute(
+                        &format!(
+                            "DELETE FROM {RECEIPT_OUTBOX_TABLE} WHERE instruction_id = ?1"
+                        ),
+                        rusqlite::params![instruction_id],
+                    )?;
+                    Ok(())
+                })?;
+                sent += 1;
+            }
+            Err(err) => {
+                store.with_conn(|conn| {
+                    conn.execute(
+                        &format!(
+                            "UPDATE {RECEIPT_OUTBOX_TABLE} SET attempts = attempts + 1 WHERE instruction_id = ?1"
+                        ),
+                        rusqlite::params![instruction_id],
+                    )?;
+                    Ok(())
+                })?;
+                log::warn!("receipt {instruction_id} still unpublished: {err:#}");
+            }
+        }
+    }
+    Ok(sent)
+}
+
 /// One executor cycle. Fetches, verifies, executes and acknowledges.
 pub fn run_signed_once(store: &SkillStore, config: &SignedExecutorConfig) -> Result<SignedRunReport> {
     devices::validate_device_id(&config.device_id)?;
+    let mut report = SignedRunReport::default();
+
+    // Answer for results whose receipt never made it out before anything new.
+    report.receipts_published = resend_pending_receipts(store, config)?;
+
     let messages = signed_channel::fetch_signed_commands(&config.url, &config.branch, &config.device_id)?;
-    let mut report = SignedRunReport { fetched: messages.len(), ..Default::default() };
+    report.fetched = messages.len();
     if messages.is_empty() {
         return Ok(report);
     }
@@ -455,7 +661,8 @@ pub fn run_signed_once(store: &SkillStore, config: &SignedExecutorConfig) -> Res
                     let text = format!("{err:#}");
                     let rejected = text.contains("not authorized on this device")
                         || text.contains("refusing to delete")
-                        || text.contains("already exists in this device's library");
+                        || text.contains("was modified locally")
+                        || text.contains("already installed from a different source");
                     let status = if rejected {
                         report.rejected += 1;
                         RECEIPT_STATUS_REJECTED
@@ -474,11 +681,26 @@ pub fn run_signed_once(store: &SkillStore, config: &SignedExecutorConfig) -> Res
             &message_id, status, reason.clone(), Some(&payload), target_path.clone(),
         );
         let signed_receipt = sign_receipt(&identity, &receipt, chrono::Utc::now().timestamp())?;
+        // Durable first: the execution result exists, so its answer survives
+        // even if the push below fails and a later run must re-send it.
+        enqueue_receipt(store, &signed_receipt)?;
         let mut receipt_error: Option<String> = None;
         match signed_channel::publish_signed_receipt(
             store, &config.url, &config.branch, &config.device_id, &signed_receipt,
         ) {
-            Ok(_) => report.receipts_published += 1,
+            Ok(_) => {
+                report.receipts_published += 1;
+                store.with_conn(|conn| {
+                    initialize_receipt_outbox(conn)?;
+                    conn.execute(
+                        &format!(
+                            "DELETE FROM {RECEIPT_OUTBOX_TABLE} WHERE instruction_id = ?1"
+                        ),
+                        rusqlite::params![message_id],
+                    )?;
+                    Ok(())
+                })?;
+            }
             Err(err) => {
                 log::error!(
                     "receipt for {message_id} could not be published (execution result stands): {err:#}"
@@ -631,6 +853,7 @@ mod tests {
             skill_url: Some(url.to_string()),
             skill_branch: None,
             skill_subpath: None,
+            skill_commit: None,
             skill_name: Some(skill_name.to_string()),
             agent_key: agent_key.to_string(),
             issued_by: manager.identity.device_id.clone(),
@@ -680,6 +903,7 @@ mod tests {
             skill_url: None,
             skill_branch: None,
             skill_subpath: None,
+            skill_commit: None,
             skill_name: Some(skill_name.to_string()),
             agent_key: agent_key.to_string(),
             issued_by: manager.identity.device_id.clone(),
@@ -852,6 +1076,224 @@ mod tests {
         let receipts = signed_channel::fetch_signed_receipts(&channel_url, BRANCH, TARGET_DEVICE).unwrap();
         assert!(receipts.is_empty(), "no receipt without a verified command");
 
+        let _ = device._dir;
+    }
+
+    /// ① The same skill can reach more agents and be safely refreshed: the
+    /// second deploy extends to a new agent, a changed source refreshes the
+    /// library and every managed copy, and a differently-sourced skill is
+    /// never overwritten.
+    #[test]
+    fn safe_update_and_multi_agent_extension() {
+        let _guard = central_repo::test_base_dir_lock();
+        let manager = manager_fixture();
+        let device = device_fixture();
+        let _override = OverrideGuard::set(&device.base);
+        authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
+        let agent_root2 = device._dir.path().join("agent-skills-2");
+        std::fs::create_dir_all(&agent_root2).unwrap();
+        authorize_agent(&device.store, "claude_code", &agent_root2).unwrap();
+
+        let skill_src = manager._dir.path().join("source").join("demo-skill");
+        std::fs::create_dir_all(&skill_src).unwrap();
+        std::fs::write(skill_src.join("SKILL.md"), "# v1").unwrap();
+        git(&skill_src, &["init", "-b", "main"]);
+        git(&skill_src, &["add", "-A"]);
+        git(&skill_src, &["commit", "-m", "v1"]);
+        let skill_url = skill_src.to_string_lossy().replace('\\', "/");
+        let channel = manager._dir.path().join("channel.git");
+        let channel_arg = channel.to_string_lossy().to_string();
+        git(&manager._dir.path(), &["init", "--bare", channel_arg.as_str()]);
+        let channel_url = channel.to_string_lossy().to_string();
+        pair(&device, &manager);
+
+        let config = SignedExecutorConfig::new(
+            channel_url.clone(), BRANCH.to_string(), TARGET_DEVICE.to_string(),
+        );
+
+        // First deploy to codex.
+        let payload = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
+        publish_command(&manager, &channel_url, &payload);
+        let report = run_signed_once(&device.store, &config).unwrap();
+        assert_eq!(report.executed, 1, "{report:#?}");
+        assert!(device.agent_root.join("demo-skill").join("SKILL.md").exists());
+
+        // Second deploy names a different agent: the library entry is
+        // reused and the new agent gets the refreshed copy.
+        let payload2 = deploy_payload(&manager, &skill_url, "claude_code", "demo-skill");
+        publish_command(&manager, &channel_url, &payload2);
+        let report2 = run_signed_once(&device.store, &config).unwrap();
+        assert_eq!(report2.executed, 1, "{report2:#?}");
+        assert!(agent_root2.join("demo-skill").join("SKILL.md").exists());
+        assert!(device.agent_root.join("demo-skill").join("SKILL.md").exists());
+
+        // The source moves forward; a refresh deploy reaches both agents.
+        std::fs::write(skill_src.join("SKILL.md"), "# v2").unwrap();
+        git(&skill_src, &["add", "-A"]);
+        git(&skill_src, &["commit", "-m", "v2"]);
+        let payload3 = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
+        publish_command(&manager, &channel_url, &payload3);
+        let report3 = run_signed_once(&device.store, &config).unwrap();
+        assert_eq!(report3.executed, 1, "{report3:#?}");
+        let codex_body = std::fs::read_to_string(device.agent_root.join("demo-skill").join("SKILL.md")).unwrap();
+        let claude_body = std::fs::read_to_string(agent_root2.join("demo-skill").join("SKILL.md")).unwrap();
+        assert_eq!(codex_body, "# v2", "codex copy must be refreshed");
+        assert_eq!(claude_body, "# v2", "claude_code copy must be refreshed");
+
+        // A differently-sourced skill of the same name is protected.
+        let foreign = device._dir.path().join("foreign-repo");
+        std::fs::create_dir_all(foreign.join("demo-skill")).unwrap();
+        std::fs::write(foreign.join("demo-skill").join("SKILL.md"), "# foreign").unwrap();
+        git(&foreign, &["init", "-b", "main"]);
+        git(&foreign, &["add", "-A"]);
+        git(&foreign, &["commit", "-m", "foreign"]);
+        let foreign_payload = deploy_payload(
+            &manager,
+            foreign.join("demo-skill").to_string_lossy().replace('\\', "/").as_ref(),
+            "codex",
+            "demo-skill",
+        );
+        // URL differs from the installed one, so create-time https rules do
+        // not apply to this local fixture; sign it directly.
+        publish_command(&manager, &channel_url, &foreign_payload);
+        let report4 = run_signed_once(&device.store, &config).unwrap();
+        assert_eq!(report4.rejected, 1, "{report4:#?}");
+        assert_eq!(codex_body, "# v2");
+
+        let _ = device._dir;
+    }
+
+    /// ② Undeploy refuses to delete a managed directory that the user has
+    /// edited since the deploy; the unmodified case still deletes.
+    #[test]
+    fn modified_deployment_blocks_undeploy() {
+        let _guard = central_repo::test_base_dir_lock();
+        let manager = manager_fixture();
+        let device = device_fixture();
+        let _override = OverrideGuard::set(&device.base);
+        authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
+        let (channel_url, skill_url) = channel_and_source(manager._dir.path(), "demo-skill");
+        pair(&device, &manager);
+        let config = SignedExecutorConfig::new(
+            channel_url.clone(), BRANCH.to_string(), TARGET_DEVICE.to_string(),
+        );
+
+        let payload = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
+        publish_command(&manager, &channel_url, &payload);
+        let report = run_signed_once(&device.store, &config).unwrap();
+        assert_eq!(report.executed, 1, "{report:#?}");
+
+        // The user edits the deployed copy in place.
+        let deployed = device.agent_root.join("demo-skill");
+        std::fs::write(deployed.join("SKILL.md"), "# my local edits").unwrap();
+
+        let remove = undeploy_payload(&manager, "codex", "demo-skill");
+        publish_command(&manager, &channel_url, &remove);
+        let report2 = run_signed_once(&device.store, &config).unwrap();
+        assert_eq!(report2.rejected, 1, "{report2:#?}");
+        assert_eq!(
+            std::fs::read_to_string(deployed.join("SKILL.md")).unwrap(),
+            "# my local edits",
+            "user edits must survive a refused undeploy"
+        );
+
+        // Restoring the deployed content makes the undeploy go through.
+        let library_body =
+            std::fs::read_to_string(device.base.join("skills").join("demo-skill").join("SKILL.md")).unwrap();
+        std::fs::write(deployed.join("SKILL.md"), library_body).unwrap();
+        publish_command(&manager, &channel_url, &remove);
+        let report3 = run_signed_once(&device.store, &config).unwrap();
+        assert_eq!(report3.executed, 1, "{report3:#?}");
+        assert!(!deployed.exists());
+        let _ = device._dir;
+    }
+
+    /// ③ A pinned commit is enforced: a command that names a revision the
+    /// source does not have fails instead of deploying something else.
+    #[test]
+    fn pinned_commit_is_enforced() {
+        let _guard = central_repo::test_base_dir_lock();
+        let manager = manager_fixture();
+        let device = device_fixture();
+        let _override = OverrideGuard::set(&device.base);
+        authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
+        let (channel_url, skill_url) = channel_and_source(manager._dir.path(), "demo-skill");
+        pair(&device, &manager);
+
+        let mut payload = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
+        payload.skill_commit = Some("0".repeat(40));
+        publish_command(&manager, &channel_url, &payload);
+
+        let config = SignedExecutorConfig::new(
+            channel_url.clone(), BRANCH.to_string(), TARGET_DEVICE.to_string(),
+        );
+        let report = run_signed_once(&device.store, &config).unwrap();
+        assert_eq!(report.failed, 1, "{report:#?}");
+        let detail = report.outcomes[0].detail.clone();
+        assert!(detail.contains("does not match the pinned commit"), "{detail}");
+        assert!(!device.agent_root.join("demo-skill").exists());
+        let _ = device._dir;
+    }
+
+    /// ④ Receipts survive locally when the channel cannot be reached and are
+    /// re-published on a later run — without re-executing the command.
+    #[test]
+    fn receipt_outbox_resends_pending_receipts() {
+        let _guard = central_repo::test_base_dir_lock();
+        let manager = manager_fixture();
+        let device = device_fixture();
+        let _override = OverrideGuard::set(&device.base);
+        authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
+        let (channel_url, skill_url) = channel_and_source(manager._dir.path(), "demo-skill");
+        pair(&device, &manager);
+
+        // Simulate an execution whose receipt was durable but unpublished:
+        // sign one as the device and put it in the outbox.
+        let identity = device_identity::ensure_identity(&device.store).unwrap();
+        let receipt = SignedReceiptPayload {
+            schema: RECEIPT_SCHEMA,
+            instruction_id: "cmd-outbox-fixture".to_string(),
+            status: RECEIPT_STATUS_SUCCESS.to_string(),
+            reason: None,
+            skill_name: Some("demo-skill".to_string()),
+            agent_key: Some("codex".to_string()),
+            target_path: Some("/fixture/demo-skill".to_string()),
+            executor_version: "fixture".to_string(),
+            finished_at: chrono::Utc::now().timestamp(),
+        };
+        let payload_json = serde_json::to_string(&receipt).unwrap();
+        let signed = identity
+            .sign_message(MessageKind::Receipt, payload_json.clone().into_bytes(), chrono::Utc::now().timestamp(), 600)
+            .unwrap();
+        let message = SignedChannelMessage {
+            envelope: signed.envelope,
+            signature: hex::encode(signed.signature),
+            payload_json,
+        };
+        enqueue_receipt(&device.store, &message).unwrap();
+
+        // One executor run: the pending receipt travels, then it is gone
+        // from the outbox, and the command queue stays untouched.
+        let config = SignedExecutorConfig::new(
+            channel_url.clone(), BRANCH.to_string(), TARGET_DEVICE.to_string(),
+        );
+        let report = run_signed_once(&device.store, &config).unwrap();
+        assert_eq!(report.receipts_published, 1, "{report:#?}");
+        let receipts = signed_channel::fetch_signed_receipts(&channel_url, BRANCH, TARGET_DEVICE).unwrap();
+        assert_eq!(receipts.len(), 1);
+        let verified = verify_receipt(&receipts[0], &device.pubkey);
+        assert_eq!(verified.instruction_id, "cmd-outbox-fixture");
+        device.store.with_conn(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM signed_receipt_outbox_v1",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "outbox must drain after a successful push");
+            Ok(())
+        }).unwrap();
         let _ = device._dir;
     }
 }

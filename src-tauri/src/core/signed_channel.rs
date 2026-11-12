@@ -39,6 +39,10 @@ pub struct SignedCommandPayload {
     pub skill_url: Option<String>,
     pub skill_branch: Option<String>,
     pub skill_subpath: Option<String>,
+    /// Full commit SHA the manager pinned at publication time. The device
+    /// refuses to deploy anything but exactly this revision.
+    #[serde(default)]
+    pub skill_commit: Option<String>,
     pub skill_name: Option<String>,
     pub agent_key: String,
     /// The publishing manager's device id; also the envelope's device_id,
@@ -76,6 +80,17 @@ pub fn validate_signed_command_payload(payload: &SignedCommandPayload) -> Result
     devices::validate_device_id(&payload.issued_by)?;
     devices::validate_device_id(&payload.target_device)?;
     devices::validate_agent_key(&payload.agent_key)?;
+    if let Some(commit) = &payload.skill_commit {
+        // Pinning means pinning: short SHAs and uppercase hex defeat it.
+        let is_full_sha = commit.len() == 40 || commit.len() == 64;
+        if !is_full_sha
+            || !commit
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        {
+            bail!("skill_commit must be a full lowercase hex SHA (40 or 64 chars)");
+        }
+    }
     match payload.action.as_str() {
         devices::ACTION_DEPLOY => devices::validate_skill_url(payload.skill_url.as_deref())?,
         // An undeploy names the skill directly; a URL would be ignored.
@@ -381,6 +396,7 @@ mod tests {
             skill_url: Some("https://github.com/example/skills.git".to_string()),
             skill_branch: Some("main".to_string()),
             skill_subpath: Some("skills/demo".to_string()),
+            skill_commit: None,
             skill_name: Some("demo-skill".to_string()),
             agent_key: "codex".to_string(),
             issued_by: issued_by.to_string(),

@@ -860,6 +860,32 @@ pub fn validate_skill_name(name: &str) -> Result<()> {
     }
 }
 
+/// Resolve the remote's current head commit for publication pinning: the
+/// full SHA a signed command carries so the device deploys exactly this
+/// revision or refuses.
+pub fn resolve_remote_head(url: &str, branch: Option<&str>) -> Result<String> {
+    let mut args: Vec<String> = vec!["ls-remote".to_string(), url.to_string()];
+    let branch = branch.filter(|b| !b.trim().is_empty());
+    if let Some(branch) = branch {
+        args.push(format!("refs/heads/{branch}"));
+    } else {
+        args.push("HEAD".to_string());
+    }
+    let argrefs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = run_git(None, Some(url), &argrefs)?;
+    let sha = out
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().next())
+        .map(|sha| sha.to_string())
+        .filter(|sha| {
+            (sha.len() == 40 || sha.len() == 64)
+                && sha.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        })
+        .context("remote did not report a usable head commit")?;
+    Ok(sha)
+}
+
 pub fn publish_state_report(url: &str, branch: &str, report: &DeviceStateReport) -> Result<String> {
     validate_state_report(report)?;
     let (_tmp, dir) = prepare_working_copy(url, branch)?;
