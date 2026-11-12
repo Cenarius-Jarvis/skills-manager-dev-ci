@@ -67,8 +67,8 @@ jobs:
         shell: bash
         run: |
           if [ -f linux_build.log ]; then
-            LOG=$(tail -c 2800 linux_build.log | sed ':a;N;$!ba;s/
-/%0A/g')
+            LOG=$(tail -c 2800 linux_build.log)
+            LOG=${LOG//$'\n'/%0A}
             echo "::error::linux build tail: $LOG"
           fi
       - name: Build the Linux CLI binary
