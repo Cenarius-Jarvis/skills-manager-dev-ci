@@ -2320,4 +2320,305 @@ mod tests {
         }).unwrap();
         let _ = device._dir;
     }
+
+    /// ① A crash between claim and preparation leaves the command claimed
+    /// but unprepared. The restart recovers it through the resume path and
+    /// executes it exactly once — never silently, never twice.
+    #[test]
+    fn claim_without_prepare_is_recovered_once() {
+        let _guard = central_repo::test_base_dir_lock();
+        let manager = manager_fixture();
+        let device = device_fixture();
+        let _override = OverrideGuard::set(&device.base);
+        device.store.set_setting("sync_mode", "copy").unwrap();
+        authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
+        let (channel_url, skill_url, _daemon) = channel_and_source(manager._dir.path(), "demo-skill");
+        pair(&device, &manager);
+        let config = SignedExecutorConfig::new(
+            channel_url.clone(), BRANCH.to_string(), TARGET_DEVICE.to_string(),
+        );
+
+        let payload = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
+        publish_command(&manager, &channel_url, &payload);
+
+        // Simulate the crash: claim only (verify_and_claim_paired commits),
+        // then die before preparation.
+        let queued = signed_channel::fetch_signed_commands(&channel_url, BRANCH, TARGET_DEVICE).unwrap();
+        assert_eq!(queued.len(), 1);
+        let message = &queued[0];
+        let signature = hex::decode(&message.signature).unwrap();
+        let manager_id = message.envelope.device_id.clone();
+        device.store.with_conn_mut(|conn| {
+            device_pairing::verify_and_claim_paired(
+                conn, &message.envelope, &signature, &message.payload_json.as_bytes(),
+                &manager_id, MessageKind::Command, chrono::Utc::now().timestamp(),
+            ).unwrap().unwrap();
+        });
+        // The crash: no prepare, no ledger, no execution.
+
+        // The restarted run recovers the claim and executes it once.
+        let report = run_signed_once(&device.store, &config).unwrap();
+        assert_eq!(report.executed, 1, "{report:#?}");
+        assert!(device.agent_root.join("demo-skill").join("SKILL.md").exists());
+
+        // The receipt says success and the ledger is clear.
+        let receipts = signed_channel::fetch_signed_receipts(&channel_url, BRANCH, TARGET_DEVICE).unwrap();
+        assert_eq!(receipts.len(), 1);
+        let verified = verify_receipt(&receipts[0], &device.pubkey);
+        assert_eq!(verified.status, RECEIPT_STATUS_SUCCESS);
+
+        // A further run must not execute anything again.
+        let report2 = run_signed_once(&device.store, &config).unwrap();
+        assert_eq!(report2.executed, 0, "no re-execution after recovery: {report2:#?}");
+        let _ = device._dir;
+    }
+
+    /// ② A multi-agent update whose second target fails mid-way leaves a
+    /// durable per-target record; the retry repairs the interrupted record
+    /// (files already carry the pinned content) and completes. Also covers
+    /// the file-level failure: the untouched target keeps its old content.
+    #[test]
+    fn multi_agent_update_failure_is_recorded_and_recovered() {
+        let _guard = central_repo::test_base_dir_lock();
+        let manager = manager_fixture();
+        let device = device_fixture();
+        let _override = OverrideGuard::set(&device.base);
+        device.store.set_setting("sync_mode", "copy").unwrap();
+        authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
+        let agent_root2 = device._dir.path().join("agent-skills-2");
+        std::fs::create_dir_all(&agent_root2).unwrap();
+        authorize_agent(&device.store, "claude_code", &agent_root2).unwrap();
+        let (channel_url, skill_url, _daemon) = channel_and_source(manager._dir.path(), "demo-skill");
+        pair(&device, &manager);
+        let config = SignedExecutorConfig::new(
+            channel_url.clone(), BRANCH.to_string(), TARGET_DEVICE.to_string(),
+        );
+
+        // First install to codex only.
+        let payload = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
+        publish_command(&manager, &channel_url, &payload);
+        let report = run_signed_once(&device.store, &config).unwrap();
+        assert_eq!(report.executed, 1, "{report:#?}");
+
+        // Move the source forward and deploy to claude_code (a new agent):
+        // the update refreshes codex's managed copy and creates claude's.
+        let skill_src = manager._dir.path().join("source").join("demo-skill");
+        std::fs::write(skill_src.join("SKILL.md"), "# v2").unwrap();
+        git(&skill_src, &["add", "-A"]);
+        git(&skill_src, &["commit", "-m", "v2"]);
+        // Push v2 into the same served repo the first deploy fetched from:
+        // the URL is git://127.0.0.1/{namespace}/demo-skill under the
+        // fixture daemon root.
+        let served_ns = skill_url
+            .trim_start_matches("git://127.0.0.1/")
+            .trim_end_matches("/demo-skill");
+        let served_repo = std::path::PathBuf::from(
+            std::env::var("GITDAEMON_ROOT").expect("GITDAEMON_ROOT must be set for executor fixtures"),
+        )
+        .join(served_ns)
+        .join("demo-skill");
+        git(&skill_src, &["push", served_repo.to_string_lossy().as_ref(), "main"]);
+        let payload2 = deploy_payload(&manager, &skill_url, "claude_code", "demo-skill");
+        publish_command(&manager, &channel_url, &payload2);
+
+        // Block claude_code's target with a plain file: the sync fails at
+        // the file level, after codex's copy was refreshed.
+        let blocked = agent_root2.join("demo-skill");
+        std::fs::write(&blocked, "not a directory").unwrap();
+        let report2 = run_signed_once(&device.store, &config).unwrap();
+        assert_eq!(report2.failed, 1, "{report2:#?}");
+
+        // The operation record shows failed, with codex refreshed and
+        // claude_code failed — readable after the "restart".
+        let ops = device.store.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT phase FROM update_operations_v1 ORDER BY updated_at DESC LIMIT 1")?;
+            let phase: String = stmt.query_row([], |row| row.get(0))?;
+            let mut stmt2 = conn.prepare(
+                "SELECT agent_key, phase FROM update_targets_v1 ORDER BY agent_key")?;
+            let rows = stmt2
+                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok((phase, rows))
+        }).unwrap();
+        assert_eq!(ops.0, "failed");
+        assert!(ops.1.contains(&("codex".to_string(), "refreshed".to_string())), "{:?}", ops.1);
+        assert!(ops.1.contains(&("claude_code".to_string(), "failed".to_string())), "{:?}", ops.1);
+
+        // codex has the new content; claude_code's file is untouched.
+        assert_eq!(
+            std::fs::read_to_string(device.agent_root.join("demo-skill").join("SKILL.md")).unwrap(),
+            "# v2"
+        );
+        assert_eq!(std::fs::read_to_string(&blocked).unwrap(), "not a directory");
+
+        // Remove the blocker and re-send the same pinned command: the
+        // update completes for the remaining agent.
+        std::fs::remove_file(&blocked).unwrap();
+        let payload3 = deploy_payload(&manager, &skill_url, "claude_code", "demo-skill");
+        publish_command(&manager, &channel_url, &payload3);
+        let report3 = run_signed_once(&device.store, &config).unwrap();
+        assert_eq!(report3.executed, 1, "{report3:#?}");
+        assert!(agent_root2.join("demo-skill").join("SKILL.md").exists());
+        assert_eq!(
+            std::fs::read_to_string(agent_root2.join("demo-skill").join("SKILL.md")).unwrap(),
+            "# v2"
+        );
+        let _ = device._dir;
+    }
+
+    /// ③ A real first-push failure (the channel's pre-receive hook rejects
+    /// it) leaves the durable receipt in the outbox; recovery republishes
+    /// it, execution stays at one, and no unknown receipt ever appears for
+    /// the instruction. Consecutive failures keep the row; a push that
+    /// succeeded before a cleanup crash re-publishes identical bytes.
+    #[test]
+    fn real_push_failure_keeps_the_durable_receipt() {
+        let _guard = central_repo::test_base_dir_lock();
+        let manager = manager_fixture();
+        let device = device_fixture();
+        let _override = OverrideGuard::set(&device.base);
+        device.store.set_setting("sync_mode", "copy").unwrap();
+        authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
+        let (channel_url, skill_url, _daemon) = channel_and_source(manager._dir.path(), "demo-skill");
+        pair(&device, &manager);
+        let config = SignedExecutorConfig::new(
+            channel_url.clone(), BRANCH.to_string(), TARGET_DEVICE.to_string(),
+        );
+
+        // A rejecting pre-receive hook: clone and fetch work, every push
+        // fails — a genuine channel-side failure on the production path.
+        let hook = manager._dir.path().join("channel.git").join("hooks").join("pre-receive");
+        std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let payload = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
+        publish_command(&manager, &channel_url, &payload);
+        let report = run_signed_once(&device.store, &config).unwrap();
+        assert_eq!(report.executed, 1, "execution happened: {report:#?}");
+        assert_eq!(report.receipts_published, 0, "the push must have failed: {report:#?}");
+
+        // The durable receipt is in the outbox; the ledger row is gone (the
+        // enqueue transaction cleared it); the channel has no receipt.
+        device.store.with_conn(|conn| {
+            let outbox: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM signed_receipt_outbox_v1",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(outbox, 1, "the receipt must wait in the outbox");
+            let ledger: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM signed_execution_ledger_v1",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(ledger, 0);
+            Ok(())
+        }).unwrap();
+        assert!(signed_channel::fetch_signed_receipts(&channel_url, BRANCH, TARGET_DEVICE)
+            .unwrap()
+            .is_empty());
+
+        // A failing run while the fault persists: the receipt stays.
+        let report2 = run_signed_once(&device.store, &config).unwrap();
+        assert_eq!(report2.receipts_published, 0);
+        device.store.with_conn(|conn| {
+            let outbox: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM signed_receipt_outbox_v1",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(outbox, 1);
+            Ok(())
+        }).unwrap();
+
+        // Remove the fault: the restarted run re-publishes the SAME durable
+        // result, executes nothing new, and never emits an unknown.
+        std::fs::remove_file(&hook).unwrap();
+        let report3 = run_signed_once(&device.store, &config).unwrap();
+        assert_eq!(report3.receipts_published, 1, "{report3:#?}");
+        assert_eq!(report3.executed, 0);
+        let receipts = signed_channel::fetch_signed_receipts(&channel_url, BRANCH, TARGET_DEVICE).unwrap();
+        assert_eq!(receipts.len(), 1);
+        let verified = verify_receipt(&receipts[0], &device.pubkey);
+        assert_eq!(verified.status, RECEIPT_STATUS_SUCCESS);
+        assert_ne!(verified.status, RECEIPT_STATUS_UNKNOWN);
+        device.store.with_conn(|conn| {
+            let outbox: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM signed_receipt_outbox_v1",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(outbox, 0, "the outbox drains after a successful push");
+            Ok(())
+        }).unwrap();
+
+        // Push succeeded, cleanup crashed: the outbox row survives, and the
+        // retry re-publishes identical bytes (same id, same result) without
+        // touching execution.
+        let identity = device_identity::ensure_identity(&device.store).unwrap();
+        let receipt = SignedReceiptPayload {
+            schema: RECEIPT_SCHEMA,
+            instruction_id: "cmd-cleanup-crash".to_string(),
+            status: RECEIPT_STATUS_SUCCESS.to_string(),
+            reason: None,
+            skill_name: Some("demo-skill".to_string()),
+            agent_key: Some("codex".to_string()),
+            target_path: None,
+            executor_version: "fixture".to_string(),
+            finished_at: chrono::Utc::now().timestamp(),
+        };
+        let payload_json = serde_json::to_string(&receipt).unwrap();
+        let signed = identity
+            .sign_message(MessageKind::Receipt, payload_json.clone().into_bytes(), chrono::Utc::now().timestamp(), 600)
+            .unwrap();
+        let message = SignedChannelMessage {
+            envelope: signed.envelope,
+            signature: hex::encode(signed.signature),
+            payload_json,
+        };
+        enqueue_receipt_and_clear_ledger(&device.store, "cmd-cleanup-crash", &message).unwrap();
+        signed_channel::publish_signed_receipt(
+            &device.store, &config.url, BRANCH, TARGET_DEVICE, &message,
+        ).unwrap();
+        // The crash: the outbox row was not removed.
+        device.store.with_conn(|conn| {
+            let outbox: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM signed_receipt_outbox_v1 WHERE instruction_id = 'cmd-cleanup-crash'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(outbox, 1);
+            Ok(())
+        }).unwrap();
+        let report4 = run_signed_once(&device.store, &config).unwrap();
+        assert_eq!(report4.receipts_published, 1, "{report4:#?}");
+        assert_eq!(report4.executed, 0);
+        device.store.with_conn(|conn| {
+            let outbox: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM signed_receipt_outbox_v1",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(outbox, 0);
+            Ok(())
+        }).unwrap();
+        let _ = device._dir;
+    }
 }
