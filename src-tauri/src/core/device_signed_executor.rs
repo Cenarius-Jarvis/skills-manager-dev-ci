@@ -378,7 +378,10 @@ fn execute_deploy(
                     skill.source_ref.as_deref().unwrap_or("local material")
                 );
             }
-            let installed = installer::install_from_git_dir(&skill_dir, Some(name))
+            // Overwrite our own library copy in place (same_source was
+            // verified above), instead of letting the installer invent a
+            // new name for a conflicting directory.
+            let installed = installer::install_skill_dir_to_destination(&skill_dir, name, &library_path)
                 .context("refreshing the library copy failed")?;
             let central = installed.central_path;
             if central != library_path {
