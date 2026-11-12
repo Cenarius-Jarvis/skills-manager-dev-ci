@@ -382,9 +382,9 @@ fn execute_deploy(
                 &skill.id,
                 &installed.name,
                 installed.description.as_deref(),
-                Some(head.clone()),
-                Some(head.clone()),
-                Some(hash.clone()),
+                Some(head.as_str()),
+                Some(head.as_str()),
+                Some(hash.as_str()),
                 "up_to_date",
             )?;
 
@@ -1217,10 +1217,10 @@ mod tests {
         let device = device_fixture();
         let _override = OverrideGuard::set(&device.base);
         authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
-        let (channel_url, skill_url) = channel_and_source(manager._dir.path(), "demo-skill");
+        let (channel_url, _skill_url) = channel_and_source(manager._dir.path(), "demo-skill");
         pair(&device, &manager);
 
-        let mut payload = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
+        let mut payload = deploy_payload(&manager, "https://example.invalid/skills.git", "codex", "demo-skill");
         payload.skill_commit = Some("0".repeat(40));
         publish_command(&manager, &channel_url, &payload);
 
