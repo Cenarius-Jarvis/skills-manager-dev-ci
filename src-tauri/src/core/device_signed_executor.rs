@@ -15,6 +15,7 @@
 //!   and preparation are consumed, so a later run never silently replays it.
 
 use anyhow::{bail, Context, Result};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
