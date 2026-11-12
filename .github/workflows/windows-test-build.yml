@@ -1,4 +1,4 @@
-name: Test builds label 7 (review fixes on 2d2a790)
+name: Test builds label 8 (crash ledger, durable receipts, update guards)
 # Deliberately narrow trigger, same scheme as two-device-simulation.yml:
 # only pushes to this branch that touch this workflow file build, so a
 # release is an explicit act — bump the build label below to cut a new
