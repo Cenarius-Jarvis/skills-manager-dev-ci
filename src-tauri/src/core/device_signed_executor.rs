@@ -944,11 +944,14 @@ mod tests {
             manager.identity.key_id,
         );
         let report = run_signed_once(&device.store, &config).unwrap();
-        assert_eq!(report.failed, 1, "full report: {report:#?}");
-        assert_eq!(
-            report.receipts_published, 1,
-            "receipt push failed; full report: {report:#?}"
-        );
+        assert_eq!(report.failed, 1, "counts: fetched={} skipped={}", report.fetched, report.skipped);
+        if report.receipts_published != 1 {
+            panic!(
+                "receipt push failed: published={} outcome_detail={:?}",
+                report.receipts_published,
+                report.outcomes.iter().map(|o| (o.status.as_str(), &o.detail)).collect::<Vec<_>>()
+            );
+        }
 
         let receipts = signed_channel::fetch_signed_receipts(&channel_url, BRANCH, TARGET_DEVICE).unwrap();
         assert_eq!(receipts.len(), 1);
