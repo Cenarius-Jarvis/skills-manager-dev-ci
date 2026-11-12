@@ -55,7 +55,22 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
       - name: Build Linux packages (deb + AppImage, isolated test build)
-        run: npm run tauri:build -- --config src-tauri/tauri.test-build.conf.json --features test-build --bundles deb appimage
+        shell: bash
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+          NO_STRIP: 'true'
+        run: |
+          set -o pipefail
+          npm run tauri:build -- --config src-tauri/tauri.test-build.conf.json --features test-build --bundles deb appimage 2>&1 | tee linux_build.log
+      - name: Surface Linux build failures as annotations
+        if: failure()
+        shell: bash
+        run: |
+          if [ -f linux_build.log ]; then
+            LOG=$(tail -c 2800 linux_build.log | sed ':a;N;$!ba;s/
+/%0A/g')
+            echo "::error::linux build tail: $LOG"
+          fi
       - name: Build the Linux CLI binary
         run: cargo build --locked --release --manifest-path src-tauri/Cargo.toml --bin skills-manager-cli
       - name: Package the Linux CLI
