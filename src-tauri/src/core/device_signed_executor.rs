@@ -303,7 +303,8 @@ fn execute_deploy(
     }
     let skill_dir = resolve_skill_dir(&clone_root, payload.skill_subpath.as_deref())?;
 
-    let mode = sync_engine::sync_mode_for_tool(agent_key, None);
+    let configured_mode = store.get_setting("sync_mode")?;
+    let mode = sync_engine::sync_mode_for_tool(agent_key, configured_mode.as_deref());
     std::fs::create_dir_all(&root).context("authorized agent root is unavailable")?;
     let root_canonical = std::fs::canonicalize(&root).context("authorized agent root is unavailable")?;
     let target = root_canonical.join(name);
@@ -1162,25 +1163,21 @@ mod tests {
         assert_eq!(codex_body, "# v2", "codex copy must be refreshed");
         assert_eq!(claude_body, "# v2", "claude_code copy must be refreshed");
 
-        // A differently-sourced skill of the same name is protected.
-        let foreign = device._dir.path().join("foreign-repo");
-        std::fs::create_dir_all(foreign.join("demo-skill")).unwrap();
-        std::fs::write(foreign.join("demo-skill").join("SKILL.md"), "# foreign").unwrap();
-        git(&foreign, &["init", "-b", "main"]);
-        git(&foreign, &["add", "-A"]);
-        git(&foreign, &["commit", "-m", "foreign"]);
+        // A same-named skill from a different https source is refused:
+        // the protection fires after verification, before any overwrite.
         let foreign_payload = deploy_payload(
             &manager,
-            foreign.join("demo-skill").to_string_lossy().replace('\\', "/").as_ref(),
+            "https://foreign.example.invalid/skills.git",
             "codex",
             "demo-skill",
         );
-        // URL differs from the installed one, so create-time https rules do
-        // not apply to this local fixture; sign it directly.
         publish_command(&manager, &channel_url, &foreign_payload);
         let report4 = run_signed_once(&device.store, &config).unwrap();
         assert_eq!(report4.rejected, 1, "{report4:#?}");
-        assert_eq!(codex_body, "# v2");
+        let codex_body_after = std::fs::read_to_string(
+            device.agent_root.join("demo-skill").join("SKILL.md"),
+        ).unwrap();
+        assert_eq!(codex_body_after, "# v2");
 
         let _ = device._dir;
     }
@@ -1194,6 +1191,9 @@ mod tests {
         let device = device_fixture();
         let _override = OverrideGuard::set(&device.base);
         authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
+        // Copy mode: the deployed copy is a real directory, so the undeploy
+        // hash protection has content to compare.
+        device.store.set_setting("sync_mode", "copy").unwrap();
         let (channel_url, skill_url) = channel_and_source(manager._dir.path(), "demo-skill");
         pair(&device, &manager);
         let config = SignedExecutorConfig::new(
