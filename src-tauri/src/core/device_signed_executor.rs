@@ -1493,7 +1493,7 @@ mod tests {
             signature: hex::encode(signed.signature),
             payload_json,
         };
-        enqueue_receipt(&device.store, &message).unwrap();
+        enqueue_receipt(&device.store, "cmd-outbox-fixture", &message).unwrap();
 
         // One executor run: the pending receipt travels, then it is gone
         // from the outbox, and the command queue stays untouched.
@@ -1529,7 +1529,7 @@ mod tests {
         let _override = OverrideGuard::set(&device.base);
         device.store.set_setting("sync_mode", "copy").unwrap();
         authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
-        let (channel_url, skill_url, _daemon) = channel_and_source(manager._dir.path(), "demo-skill");
+        let (channel_url, skill_url) = channel_and_source(manager._dir.path(), "demo-skill");
         pair(&device, &manager);
         let config = SignedExecutorConfig::new(
             channel_url.clone(), BRANCH.to_string(), TARGET_DEVICE.to_string(),
@@ -1587,7 +1587,7 @@ mod tests {
         let _override = OverrideGuard::set(&device.base);
         device.store.set_setting("sync_mode", "copy").unwrap();
         authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
-        let (channel_url, skill_url, _daemon) = channel_and_source(manager._dir.path(), "demo-skill");
+        let (channel_url, skill_url) = channel_and_source(manager._dir.path(), "demo-skill");
         pair(&device, &manager);
         let config = SignedExecutorConfig::new(
             channel_url.clone(), BRANCH.to_string(), TARGET_DEVICE.to_string(),
