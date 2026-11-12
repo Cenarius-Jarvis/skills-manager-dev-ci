@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 
 /// Current schema version. Bump this when adding a new migration.
-const LATEST_VERSION: u32 = 13;
+const LATEST_VERSION: u32 = 14;
 
 /// Run all pending migrations on the database.
 ///
@@ -60,6 +60,7 @@ fn migrate_step(conn: &Connection, from_version: u32) -> Result<()> {
         10 => migrate_v10_to_v11(conn),
         11 => migrate_v11_to_v12(conn),
         12 => migrate_v12_to_v13(conn),
+        13 => migrate_v13_to_v14(conn),
         _ => bail!("unknown migration version: {from_version}"),
     }
 }
@@ -451,6 +452,27 @@ fn migrate_v11_to_v12(conn: &Connection) -> Result<()> {
 /// agree on the exact schema.
 fn migrate_v12_to_v13(conn: &Connection) -> Result<()> {
     super::device_signed_executor::initialize_receipt_outbox(conn)
+}
+
+/// v13 → v14: durable records for in-flight signed updates. Each row pins
+/// the staging/backup locations and the phase of one update attempt, so a
+/// restart can tell exactly what a leftover directory belongs to.
+fn migrate_v13_to_v14(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS update_operations_v1 (
+            operation_id TEXT NOT NULL PRIMARY KEY,
+            device_id TEXT NOT NULL,
+            skill_name TEXT NOT NULL,
+            library_path TEXT NOT NULL,
+            staging_path TEXT NOT NULL,
+            backup_path TEXT NOT NULL,
+            old_hash TEXT NOT NULL,
+            new_hash TEXT NOT NULL,
+            phase TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
+        );"
+    )?;
+    Ok(())
 }
 
 // ── Helpers ──

@@ -200,10 +200,17 @@ fn claim_command(
             now,
         ) {
             Ok(Some(claimed)) => match prepare_claimed_command(conn, claimed, now) {
-                Ok(prepared) => Ok(Some(prepared)),
+                Ok(prepared) => {
+                    // Same connection, immediately after the preparation slot
+                    // is consumed: from this instant the command has a
+                    // durable in-flight record, closing the window where a
+                    // prepared-but-unrecorded crash would leave it silent.
+                    mark_execution_started(conn, &message.envelope.message_id)?;
+                    Ok(Some(prepared))
+                }
                 Err(err) => {
                     #[cfg(test)]
-                    println!(
+                    eprintln!(
                         "claim diag: {} prepare failed: {err:#}",
                         message.envelope.message_id
                     );
@@ -410,6 +417,29 @@ fn execute_deploy(
                     "library copy was modified locally (hash changed since last deploy); refusing to update"
                 );
             }
+            // Directories left by earlier interrupted updates are reported,
+            // never deleted or adopted: only this operation's own paths are
+            // touched, and only its record authorizes their cleanup.
+            let library_parent = library_path
+                .parent()
+                .context("library directory has no parent")?
+                .to_path_buf();
+            let leftovers = leftover_update_directories(store, &library_parent, name)?;
+            let operation_id = uuid::Uuid::new_v4().simple().to_string();
+            let staging = library_parent.join(format!(".{name}.staging.{operation_id}"));
+            let backup = library_parent.join(format!(".{name}.backup.{operation_id}"));
+            let mut record = UpdateOperationRecord {
+                operation_id: operation_id.clone(),
+                device_id: payload.issued_by.clone(),
+                skill_name: name.to_string(),
+                library_path: library_path.to_string_lossy().to_string(),
+                staging_path: staging.to_string_lossy().to_string(),
+                backup_path: backup.to_string_lossy().to_string(),
+                old_hash: recorded_hash.clone(),
+                new_hash: String::new(),
+                phase: UPDATE_PHASE_STAGED.to_string(),
+                updated_at: chrono::Utc::now().timestamp(),
+            };
             let rows = store.get_targets_for_skill(&skill.id)?;
             for row in &rows {
                 let Some(row_hash) = &row.source_hash else {
@@ -434,24 +464,31 @@ fn execute_deploy(
 
             // Stage the new revision next to the library copy and verify the
             // staged tree before anything on disk is replaced.
-            let library_parent = library_path
-                .parent()
-                .context("library directory has no parent")?
-                .to_path_buf();
-            let staging = library_parent.join(format!(".{name}.staging"));
             let _ = std::fs::remove_dir_all(&staging);
             installer::install_skill_dir_to_destination(&skill_dir, name, &staging)
                 .context("staging the new revision failed")?;
             let staged_hash = content_hash::hash_directory(&staging)?;
+            record.new_hash = staged_hash.clone();
+            record.updated_at = chrono::Utc::now().timestamp();
+            record_update_operation(store, &record)?;
 
-            let backup = library_parent.join(format!(".{name}.backup"));
             let _ = std::fs::remove_dir_all(&backup);
             std::fs::rename(&library_path, &backup)
                 .context("swapping the library copy failed")?;
+            record.phase = UPDATE_PHASE_SWAPPED.to_string();
+            record.updated_at = chrono::Utc::now().timestamp();
+            record_update_operation(store, &record)?;
             if std::fs::rename(&staging, &library_path).is_err() {
                 std::fs::rename(&backup, &library_path)
                     .context("library rollback also failed; backup left in place")?;
-                bail!("library swap failed; previous copy restored from backup");
+                record.phase = UPDATE_PHASE_MANUAL.to_string();
+                record.updated_at = chrono::Utc::now().timestamp();
+                record_update_operation(store, &record)?;
+                bail!(
+                    "library swap failed; previous copy restored from backup. \
+                     Leftover paths for manual review: {:?}",
+                    record.backup_path
+                );
             }
             let swap_result: Result<()> = (|| {
                 let new_hash = content_hash::hash_directory(&library_path)?;
@@ -471,11 +508,29 @@ fn execute_deploy(
             })();
             if let Err(err) = swap_result {
                 // Roll the library back; the update can be retried with the
-                // same pinned command.
+                // same pinned command. The backup stays until the rollback
+                // is proven successful.
                 let _ = std::fs::remove_dir_all(&library_path);
-                let _ = std::fs::rename(&backup, &library_path);
-                return Err(err.context("library update rolled back"));
+                let rollback_ok = std::fs::rename(&backup, &library_path).is_ok();
+                record.phase = if rollback_ok {
+                    UPDATE_PHASE_FAILED.to_string()
+                } else {
+                    UPDATE_PHASE_MANUAL.to_string()
+                };
+                record.updated_at = chrono::Utc::now().timestamp();
+                record_update_operation(store, &record)?;
+                let mut message = err.context("library update rolled back");
+                if !rollback_ok {
+                    message = message.context(format!(
+                        "rollback also failed; previous content preserved at {:?} — manual attention required",
+                        record.backup_path
+                    ));
+                }
+                return Err(message);
             }
+            record.phase = UPDATE_PHASE_REFRESHING.to_string();
+            record.updated_at = chrono::Utc::now().timestamp();
+            record_update_operation(store, &record)?;
 
             // Refresh every managed deployment of this skill ...
             let mut touched_requested = false;
@@ -490,6 +545,9 @@ fn execute_deploy(
                 ).context("refreshing a managed deployment failed")?;
                 let row_hash = content_hash::hash_directory(&row_target)?;
                 if row_hash != staged_hash {
+                    record.phase = UPDATE_PHASE_FAILED.to_string();
+                    record.updated_at = chrono::Utc::now().timestamp();
+                    record_update_operation(store, &record)?;
                     bail!(
                         "refreshed copy at {} does not match the library copy; re-sending the same pinned command refreshes the remaining agents",
                         row.target_path
@@ -533,8 +591,19 @@ fn execute_deploy(
                     source_hash: Some(staged_hash.clone()),
                 })?;
             }
-            // Everything refreshed: the backup is no longer needed.
+            // Everything refreshed: the record proves this backup belongs to
+            // this finished operation, so it is the one directory that may
+            // be cleaned. Leftovers from other attempts stay untouched.
             let _ = std::fs::remove_dir_all(&backup);
+            record.phase = UPDATE_PHASE_DONE.to_string();
+            record.updated_at = chrono::Utc::now().timestamp();
+            record_update_operation(store, &record)?;
+            if !leftovers.is_empty() {
+                log::warn!(
+                    "update of {name:?} succeeded; earlier interrupted-update directories were NOT touched: {:?}",
+                    leftovers
+                );
+            }
             sync_metadata::write_all_from_db_unlocked(store)
                 .context("publishing skill metadata failed; deployment preserved")?;
             Ok(target)
@@ -626,6 +695,16 @@ const RECEIPT_OUTBOX_TABLE: &str = "signed_receipt_outbox_v1";
 const EXECUTION_LEDGER_TABLE: &str = "signed_execution_ledger_v1";
 pub const RECEIPT_STATUS_UNKNOWN: &str = "unknown";
 
+/// Phases of one signed update attempt, persisted in update_operations_v1.
+/// `needs-manual-attention` means a rollback also failed and the operator
+/// must reconcile the paths listed in the row.
+pub const UPDATE_PHASE_STAGED: &str = "staged";
+pub const UPDATE_PHASE_SWAPPED: &str = "swapped";
+pub const UPDATE_PHASE_REFRESHING: &str = "refreshing";
+pub const UPDATE_PHASE_DONE: &str = "done";
+pub const UPDATE_PHASE_FAILED: &str = "failed";
+pub const UPDATE_PHASE_MANUAL: &str = "needs-manual-attention";
+
 pub fn initialize_receipt_outbox(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(&format!(
         "CREATE TABLE IF NOT EXISTS {RECEIPT_OUTBOX_TABLE} (
@@ -645,6 +724,38 @@ pub fn initialize_receipt_outbox(conn: &rusqlite::Connection) -> Result<()> {
 /// Store a signed receipt so it survives a crash or network loss. The
 /// outbox key is the COMMAND's instruction id — the same id the delete
 /// after a successful push uses.
+/// Persist the receipt and clear the execution ledger in ONE transaction:
+/// after it commits, the command has exactly one durable answer and no
+/// in-flight record, so no later run can also report it unknown. If the
+/// transaction fails, neither side is written and the result stays unknown.
+fn enqueue_receipt_and_clear_ledger(
+    store: &SkillStore,
+    instruction_id: &str,
+    message: &SignedChannelMessage,
+) -> Result<()> {
+    let message_json = serde_json::to_string(message)?;
+    let now = chrono::Utc::now().timestamp();
+    store.with_conn_mut(|conn| {
+        initialize_receipt_outbox(conn)?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute(
+            &format!(
+                "INSERT INTO {RECEIPT_OUTBOX_TABLE} (instruction_id, message_json, attempts, created_at)
+                 VALUES (?1, ?2, 0, ?3)
+                 ON CONFLICT(instruction_id) DO UPDATE SET message_json = excluded.message_json"
+            ),
+            rusqlite::params![instruction_id, message_json, now],
+        )?;
+        tx.execute(
+            &format!("DELETE FROM {EXECUTION_LEDGER_TABLE} WHERE instruction_id = ?1"),
+            rusqlite::params![instruction_id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    })
+}
+
+#[allow(dead_code)]
 fn enqueue_receipt(
     store: &SkillStore,
     instruction_id: &str,
@@ -696,13 +807,107 @@ fn pending_unknown_executions(store: &SkillStore) -> Result<Vec<String>> {
     store.with_conn(|conn| {
         initialize_receipt_outbox(conn)?;
         let mut stmt = conn.prepare(&format!(
-            "SELECT instruction_id FROM {EXECUTION_LEDGER_TABLE} ORDER BY started_at"
+            "SELECT instruction_id FROM {EXECUTION_LEDGER_TABLE}
+             WHERE instruction_id NOT IN
+                   (SELECT instruction_id FROM {RECEIPT_OUTBOX_TABLE})
+             ORDER BY started_at"
         ))?;
         let rows = stmt
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
     })
+}
+
+/// One durable update-attempt record. Created before anything on disk is
+/// replaced and advanced through the phases as the update proceeds.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UpdateOperationRecord {
+    pub operation_id: String,
+    pub device_id: String,
+    pub skill_name: String,
+    pub library_path: String,
+    pub staging_path: String,
+    pub backup_path: String,
+    pub old_hash: String,
+    pub new_hash: String,
+    pub phase: String,
+    pub updated_at: i64,
+}
+
+fn initialize_update_operations(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS update_operations_v1 (
+            operation_id TEXT NOT NULL PRIMARY KEY,
+            device_id TEXT NOT NULL,
+            skill_name TEXT NOT NULL,
+            library_path TEXT NOT NULL,
+            staging_path TEXT NOT NULL,
+            backup_path TEXT NOT NULL,
+            old_hash TEXT NOT NULL,
+            new_hash TEXT NOT NULL,
+            phase TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
+        );"
+    )?;
+    Ok(())
+}
+
+fn record_update_operation(store: &SkillStore, record: &UpdateOperationRecord) -> Result<()> {
+    store.with_conn(|conn| {
+        initialize_update_operations(conn)?;
+        conn.execute(
+            "INSERT INTO update_operations_v1
+                (operation_id, device_id, skill_name, library_path, staging_path, backup_path,
+                 old_hash, new_hash, phase, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(operation_id) DO UPDATE SET
+                phase = excluded.phase, updated_at = excluded.updated_at",
+            rusqlite::params![
+                record.operation_id, record.device_id, record.skill_name, record.library_path,
+                record.staging_path, record.backup_path, record.old_hash, record.new_hash,
+                record.phase, record.updated_at
+            ],
+        )?;
+        Ok(())
+    })
+}
+
+/// Leftover staging/backup directories for one skill that do NOT belong to
+/// a known in-flight operation. They are reported, never deleted here: a
+/// directory's name alone cannot prove who created it or what it holds.
+fn leftover_update_directories(
+    store: &SkillStore, library_parent: &Path, skill_name: &str,
+) -> Result<Vec<String>> {
+    let mut leftovers = Vec::new();
+    store.with_conn(|conn| {
+        initialize_update_operations(conn)?;
+        let mut stmt = conn.prepare(
+            "SELECT staging_path, backup_path FROM update_operations_v1
+             WHERE skill_name = ?1 AND phase != 'done'"
+        )?;
+        let known: Vec<String> = stmt
+            .query_map(rusqlite::params![skill_name], |row| {
+                Ok(row.get::<_, String>(0)?)
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        let _ = known;
+        Ok(())
+    })?;
+    let prefix_staging = format!(".{skill_name}.staging");
+    let prefix_backup = format!(".{skill_name}.backup");
+    for entry in std::fs::read_dir(library_parent)? {
+        let entry = entry?;
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        if (file_name.starts_with(&prefix_staging) || file_name.starts_with(&prefix_backup))
+            && entry.path().is_dir()
+        {
+            leftovers.push(entry.path().to_string_lossy().to_string());
+        }
+    }
+    leftovers.sort();
+    Ok(leftovers)
 }
 
 fn resend_pending_receipts(store: &SkillStore, config: &SignedExecutorConfig) -> Result<usize> {
@@ -718,10 +923,29 @@ fn resend_pending_receipts(store: &SkillStore, config: &SignedExecutorConfig) ->
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
     })?;
+    let identity = device_identity::ensure_identity(store)?;
+    let now = chrono::Utc::now().timestamp();
     let mut sent = 0;
     for (instruction_id, message_json) in pending {
-        let message: SignedChannelMessage = serde_json::from_str(&message_json)
+        let mut message: SignedChannelMessage = serde_json::from_str(&message_json)
             .context("pending receipt is not valid JSON")?;
+        // A receipt signed longer ago than its validity window can never be
+        // verified by the manager. Re-sign the SAME durable result under the
+        // current window: same instruction id, same status, refreshed
+        // timestamp — identity and idempotence unchanged.
+        if message.envelope.expires_at <= now {
+            let payload: SignedReceiptPayload = serde_json::from_str(&message.payload_json)
+                .context("pending receipt payload is not valid JSON")?;
+            let refreshed = identity.sign_message(
+                MessageKind::Receipt,
+                serde_json::to_vec(&payload)?,
+                now,
+                600,
+            )?;
+            message.envelope = refreshed.envelope;
+            message.signature = hex::encode(refreshed.signature);
+            message.payload_json = serde_json::to_string(&payload)?;
+        }
         match signed_channel::publish_signed_receipt(
             store, &config.url, &config.branch, &config.device_id, &message,
         ) {
@@ -825,9 +1049,8 @@ pub fn run_signed_once(store: &SkillStore, config: &SignedExecutorConfig) -> Res
             continue;
         };
         let _ = prepared; // The slot is consumed; outcome must be receipted.
-        // From here the command has an owner: mark that execution started
-        // so a crash before the receipt lands reads back as unknown.
-        store.with_conn(|conn| mark_execution_started(conn, &message_id))?;
+        // The in-flight record was written inside claim_command, right
+        // after the preparation slot was consumed.
 
         // From here on the device owes a receipt whatever happens.
         let (status, reason, target_path): (&str, Option<String>, Option<String>) =
@@ -866,7 +1089,7 @@ pub fn run_signed_once(store: &SkillStore, config: &SignedExecutorConfig) -> Res
         let signed_receipt = sign_receipt(&identity, &receipt, chrono::Utc::now().timestamp())?;
         // Durable first: the execution result exists, so its answer survives
         // even if the push below fails and a later run must re-send it.
-        enqueue_receipt(store, &message_id, &signed_receipt)?;
+        enqueue_receipt_and_clear_ledger(store, &message_id, &signed_receipt)?;
         let mut receipt_error: Option<String> = None;
         match signed_channel::publish_signed_receipt(
             store, &config.url, &config.branch, &config.device_id, &signed_receipt,
