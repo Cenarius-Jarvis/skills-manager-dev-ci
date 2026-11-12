@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 
 /// Current schema version. Bump this when adding a new migration.
-const LATEST_VERSION: u32 = 12;
+const LATEST_VERSION: u32 = 13;
 
 /// Run all pending migrations on the database.
 ///
@@ -59,6 +59,7 @@ fn migrate_step(conn: &Connection, from_version: u32) -> Result<()> {
         9 => migrate_v9_to_v10(conn),
         10 => migrate_v10_to_v11(conn),
         11 => migrate_v11_to_v12(conn),
+        12 => migrate_v12_to_v13(conn),
         _ => bail!("unknown migration version: {from_version}"),
     }
 }
@@ -443,6 +444,13 @@ fn migrate_v10_to_v11(conn: &Connection) -> Result<()> {
 /// exact schema. Creating the tables does not pair any device.
 fn migrate_v11_to_v12(conn: &Connection) -> Result<()> {
     super::device_pairing::initialize_trust_store(conn)
+}
+
+/// v12 → v13: the signed-receipt outbox and the execution ledger. Created
+/// via the shared initializer so the app, the CLI executor and the tests
+/// agree on the exact schema.
+fn migrate_v12_to_v13(conn: &Connection) -> Result<()> {
+    super::device_signed_executor::initialize_receipt_outbox(conn)
 }
 
 // ── Helpers ──

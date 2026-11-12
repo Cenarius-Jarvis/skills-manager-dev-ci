@@ -626,7 +626,7 @@ const RECEIPT_OUTBOX_TABLE: &str = "signed_receipt_outbox_v1";
 const EXECUTION_LEDGER_TABLE: &str = "signed_execution_ledger_v1";
 pub const RECEIPT_STATUS_UNKNOWN: &str = "unknown";
 
-fn initialize_receipt_outbox(conn: &rusqlite::Connection) -> Result<()> {
+pub fn initialize_receipt_outbox(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(&format!(
         "CREATE TABLE IF NOT EXISTS {RECEIPT_OUTBOX_TABLE} (
             instruction_id TEXT NOT NULL PRIMARY KEY,
