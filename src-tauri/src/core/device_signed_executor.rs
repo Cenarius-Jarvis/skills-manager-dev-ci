@@ -844,7 +844,8 @@ pub fn run_signed_once(store: &SkillStore, config: &SignedExecutorConfig) -> Res
                         || text.contains("refusing to delete")
                         || text.contains("was modified locally")
                         || text.contains("already installed from a different source")
-                        || text.contains("exists without a library record");
+                        || text.contains("exists without a library record")
+                        || text.contains("no recorded content hash");
                     let status = if rejected {
                         report.rejected += 1;
                         RECEIPT_STATUS_REJECTED
@@ -1168,6 +1169,20 @@ mod tests {
         assert_eq!(removed, target);
         assert!(!device.agent_root.join("demo-skill").exists());
         assert!(device.base.join("skills").join("demo-skill").join("SKILL.md").exists());
+
+        // ③ regression: the outbox is keyed by the command's instruction
+        // id and drains completely once its receipt is pushed.
+        device.store.with_conn(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM signed_receipt_outbox_v1",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "outbox must be empty after successful pushes");
+            Ok(())
+        }).unwrap();
 
         let _ = device._dir;
     }
