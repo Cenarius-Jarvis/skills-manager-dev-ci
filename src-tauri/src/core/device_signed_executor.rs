@@ -812,14 +812,13 @@ mod tests {
     }
 
     fn start_git_daemon(base: &Path) -> GitDaemon {
-        let base_str = base.to_string_lossy().to_string();
+        let base_str = format!("--base-path={}", base.to_string_lossy());
         let mut child = std::process::Command::new("git")
             .args([
                 "daemon",
                 "--port=9418",
                 "--listen=127.0.0.1",
                 "--export-all",
-                "--base-path",
                 base_str.as_str(),
                 "--verbose",
             ])
