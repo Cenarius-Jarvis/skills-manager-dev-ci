@@ -821,7 +821,6 @@ mod tests {
                 "--reuseaddr",
                 "--export-all",
                 base_str.as_str(),
-                "--verbose",
             ])
             .current_dir(base)
             .stderr(std::process::Stdio::piped())
