@@ -285,7 +285,6 @@ impl DeviceIdentity {
             .to_vec();
         Ok(SignedDeviceMessage { envelope, signature, payload })
     }
-}
 
 /// Re-sign an existing envelope under a fresh validity window with this
 /// identity. Used to re-issue a durable receipt whose signature has lapsed:
@@ -318,6 +317,9 @@ pub fn re_sign_envelope(
         .to_vec();
     Ok(SignedDeviceMessage { envelope, signature, payload })
 }
+}
+
+
 
 /// One signed message, ready to be published to a channel by the caller.
 #[derive(Debug, Clone, Serialize, Deserialize)]
