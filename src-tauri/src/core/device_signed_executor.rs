@@ -223,7 +223,7 @@ fn claim_command(
             }
             Err(err) => {
                 #[cfg(test)]
-                println!(
+                eprintln!(
                     "claim diag: {} verification failed: {err:#}",
                     message.envelope.message_id
                 );
@@ -289,6 +289,24 @@ fn execute_deploy(
     let library_path = library_skill_path(name)?;
     let existing = store
         .get_skill_by_central_path(&library_path.to_string_lossy())?;
+    // Refuse before touching the network: a same-named skill from another
+    // source, or an unrecorded directory on disk, is never overwritten by
+    // a channel command.
+    if let Some(skill) = &existing {
+        let same_source = skill.source_type == "git"
+            && skill.source_ref.as_deref() == payload.skill_url.as_deref();
+        if !same_source {
+            bail!(
+                "skill {name:?} is already installed from a different source ({}); refusing to overwrite",
+                skill.source_ref.as_deref().unwrap_or("local material")
+            );
+        }
+    } else if library_path.exists() {
+        bail!(
+            "skill directory {} exists without a library record; refusing to overwrite",
+            library_path.display()
+        );
+    }
 
     let _lock = RepoLock::acquire_foreground("signed command deploy")?;
     let (_clone_tmp, clone_root) =
@@ -368,20 +386,10 @@ fn execute_deploy(
             Ok(target)
         }
         Some(skill) => {
-            // Update / multi-agent extension. Only skills this signed
-            // channel installed may be refreshed; anything the user
-            // installed from another source is protected.
-            let same_source = skill.source_type == "git"
-                && skill.source_ref.as_deref() == payload.skill_url.as_deref();
-            if !same_source {
-                bail!(
-                    "skill {name:?} is already installed from a different source ({}); refusing to overwrite",
-                    skill.source_ref.as_deref().unwrap_or("local material")
-                );
-            }
-            // Overwrite our own library copy in place (same_source was
-            // verified above), instead of letting the installer invent a
-            // new name for a conflicting directory.
+            // Update / multi-agent extension; the same-source guard before
+            // the fetch already rejected anything this channel did not
+            // install. Overwrite our own library copy in place instead of
+            // letting the installer invent a new name for a conflict.
             let installed = installer::install_skill_dir_to_destination(&skill_dir, name, &library_path)
                 .context("refreshing the library copy failed")?;
             let central = installed.central_path;
@@ -679,7 +687,8 @@ pub fn run_signed_once(store: &SkillStore, config: &SignedExecutorConfig) -> Res
                     let rejected = text.contains("not authorized on this device")
                         || text.contains("refusing to delete")
                         || text.contains("was modified locally")
-                        || text.contains("already installed from a different source");
+                        || text.contains("already installed from a different source")
+                        || text.contains("exists without a library record");
                     let status = if rejected {
                         report.rejected += 1;
                         RECEIPT_STATUS_REJECTED
@@ -1163,11 +1172,22 @@ mod tests {
         assert_eq!(codex_body, "# v2", "codex copy must be refreshed");
         assert_eq!(claude_body, "# v2", "claude_code copy must be refreshed");
 
-        // A same-named skill from a different https source is refused:
-        // the protection fires after verification, before any overwrite.
+        // A same-named skill from a different git source is refused: the
+        // foreign repo is cloneable (served by the fixture daemon) so the
+        // same-source guard — not a network error — produces the rejection.
+        let foreign_src = manager._dir.path().join("foreign").join("demo-skill");
+        std::fs::create_dir_all(&foreign_src).unwrap();
+        std::fs::write(foreign_src.join("SKILL.md"), "# foreign").unwrap();
+        git(&foreign_src, &["init", "-b", "main"]);
+        git(&foreign_src, &["add", "-A"]);
+        git(&foreign_src, &["commit", "-m", "foreign"]);
+        let foreign_served = daemon_root.join("foreign-ns").join("demo-skill");
+        std::fs::create_dir_all(&foreign_served).unwrap();
+        git(&foreign_served, &["init", "--bare", "-b", "main"]);
+        git(&foreign_src, &["push", foreign_served.to_string_lossy().as_ref(), "main"]);
         let foreign_payload = deploy_payload(
             &manager,
-            "https://foreign.example.invalid/skills.git",
+            &format!("git://127.0.0.1/foreign-ns/demo-skill"),
             "codex",
             "demo-skill",
         );
