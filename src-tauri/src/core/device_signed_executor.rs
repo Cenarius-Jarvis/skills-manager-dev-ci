@@ -812,7 +812,7 @@ mod tests {
     }
 
     /// Channel repo plus a local git repository holding one skill.
-    fn channel_and_source(manager_dir: &Path, skill_name: &str) -> (String, String) {
+    fn channel_and_source(manager_dir: &Path, skill_name: &str) -> (String, String, GitDaemon) {
         let channel = manager_dir.join("channel.git");
         let channel_arg = channel.to_string_lossy().to_string();
         git(&manager_dir.to_path_buf(), &["init", "--bare", channel_arg.as_str()]);
