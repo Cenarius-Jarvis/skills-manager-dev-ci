@@ -287,6 +287,38 @@ impl DeviceIdentity {
     }
 }
 
+/// Re-sign an existing envelope under a fresh validity window with this
+/// identity. Used to re-issue a durable receipt whose signature has lapsed:
+/// the message id, payload hash and payload bytes stay exactly the same, so
+/// the re-issued message answers for the same result and keeps its identity.
+pub fn re_sign_envelope(
+    &self,
+    mut envelope: DeviceEnvelope,
+    payload: Vec<u8>,
+    now: i64,
+    ttl_secs: i64,
+) -> Result<SignedDeviceMessage> {
+    if now <= 0 {
+        bail!("message issue time must be positive");
+    }
+    if payload.len() > 1024 * 1024 {
+        bail!("message payload exceeds the protocol size limit");
+    }
+    let ttl = ttl_secs.clamp(1, device_envelope::max_lifetime(envelope.kind));
+    envelope.version = 1;
+    envelope.device_id = self.device_id.clone();
+    envelope.key_id = self.key_id.clone();
+    envelope.issued_at = now;
+    envelope.expires_at = now.checked_add(ttl).context("message expiry overflows")?;
+    envelope.payload_sha256 = hex::encode(Sha256::digest(&payload));
+    let signature = self
+        .keypair
+        .sign(&device_envelope::signing_bytes(&envelope)?)
+        .as_ref()
+        .to_vec();
+    Ok(SignedDeviceMessage { envelope, signature, payload })
+}
+
 /// One signed message, ready to be published to a channel by the caller.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignedDeviceMessage {

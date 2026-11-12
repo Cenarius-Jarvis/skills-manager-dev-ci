@@ -936,20 +936,17 @@ fn resend_pending_receipts(store: &SkillStore, config: &SignedExecutorConfig) ->
         if message.envelope.expires_at <= now {
             let payload: SignedReceiptPayload = serde_json::from_str(&message.payload_json)
                 .context("pending receipt payload is not valid JSON")?;
-            let refreshed = identity.sign_message(
-                MessageKind::Receipt,
+            // Re-issue the SAME receipt: keep its message id, payload hash
+            // and payload bytes; replace only the signature and window.
+            let refreshed = identity.re_sign_envelope(
+                message.envelope.clone(),
                 serde_json::to_vec(&payload)?,
                 now,
                 600,
             )?;
-            // Re-issue the SAME receipt: keep its message id (and payload
-            // hash — the result bytes are unchanged), replace only the
-            // signature and validity window.
-            let mut envelope = refreshed.envelope;
-            envelope.message_id = message.envelope.message_id.clone();
-            envelope.payload_sha256 = message.envelope.payload_sha256.clone();
-            message.envelope = envelope;
+            message.envelope = refreshed.envelope;
             message.signature = hex::encode(refreshed.signature);
+            message.payload_json = serde_json::to_string(&payload)?;
         }
         match signed_channel::publish_signed_receipt(
             store, &config.url, &config.branch, &config.device_id, &message,
