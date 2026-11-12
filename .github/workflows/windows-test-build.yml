@@ -67,9 +67,13 @@ jobs:
         shell: bash
         run: |
           if [ -f linux_build.log ]; then
-            LOG=$(tail -c 2800 linux_build.log)
+            if grep -q "^error" linux_build.log; then
+              LOG=$(grep -E "^error" -A6 linux_build.log | tail -c 2600)
+            else
+              LOG=$(tail -c 2600 linux_build.log)
+            fi
             LOG=${LOG//$'\n'/%0A}
-            echo "::error::linux build tail: $LOG"
+            echo "::error::linux build errors: $LOG"
           fi
       - name: Build the Linux CLI binary
         run: cargo build --locked --release --manifest-path src-tauri/Cargo.toml --bin skills-manager-cli
