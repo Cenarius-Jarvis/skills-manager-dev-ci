@@ -566,15 +566,19 @@ fn execute_undeploy(store: &SkillStore, payload: &SignedCommandPayload) -> Resul
     // when its content still matches what this channel deployed. A symlink
     // holds no user edits (the library copy stays), so links go freely.
     if !meta.file_type().is_symlink() {
-        if let Some(recorded) = &known.source_hash {
-            let current = content_hash::hash_directory(&target)
-                .context("cannot hash the deployment directory; refusing to delete")?;
-            if current != *recorded {
-                bail!(
-                    "deployment directory was modified locally (content hash changed since deploy); \
-                     refusing to delete user changes"
-                );
-            }
+        // Without a recorded hash there is no way to prove the directory is
+        // untouched managed content — deletion is refused outright.
+        let Some(recorded) = &known.source_hash else {
+            bail!(
+                "deployment has no recorded content hash; refusing to delete an unverifiable directory"
+            );
+        };
+        let current = content_hash::hash_directory(&target)
+            .context("cannot hash the deployment directory; refusing to delete")?;
+        if current != *recorded {
+            bail!(
+                "deployment directory was modified locally (content hash changed since deploy); refusing to delete user changes"
+            );
         }
     }
     if meta.file_type().is_symlink() {
@@ -616,6 +620,11 @@ fn execute_undeploy(store: &SkillStore, payload: &SignedCommandPayload) -> Resul
 /// idempotent writes — but commands themselves are never re-executed: their
 /// replay ledger and consumed preparation slot are untouched by any of this.
 const RECEIPT_OUTBOX_TABLE: &str = "signed_receipt_outbox_v1";
+/// Commands whose execution started but whose outcome never became durable.
+/// A leftover row here means the result is unknown: the device answers with
+/// an explicit unknown receipt rather than guessing.
+const EXECUTION_LEDGER_TABLE: &str = "signed_execution_ledger_v1";
+pub const RECEIPT_STATUS_UNKNOWN: &str = "unknown";
 
 fn initialize_receipt_outbox(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(&format!(
@@ -624,14 +633,23 @@ fn initialize_receipt_outbox(conn: &rusqlite::Connection) -> Result<()> {
             message_json TEXT NOT NULL,
             attempts INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS {EXECUTION_LEDGER_TABLE} (
+            instruction_id TEXT NOT NULL PRIMARY KEY,
+            started_at INTEGER NOT NULL
         );"
     ))?;
     Ok(())
 }
 
-/// Store a signed receipt so it survives a crash or network loss.
-fn enqueue_receipt(store: &SkillStore, message: &SignedChannelMessage) -> Result<()> {
-    let instruction_id = message.envelope.message_id.clone();
+/// Store a signed receipt so it survives a crash or network loss. The
+/// outbox key is the COMMAND's instruction id — the same id the delete
+/// after a successful push uses.
+fn enqueue_receipt(
+    store: &SkillStore,
+    instruction_id: &str,
+    message: &SignedChannelMessage,
+) -> Result<()> {
     let message_json = serde_json::to_string(message)?;
     store.with_conn(|conn| {
         initialize_receipt_outbox(conn)?;
@@ -650,6 +668,43 @@ fn enqueue_receipt(store: &SkillStore, message: &SignedChannelMessage) -> Result
 /// Push every pending receipt again. Channel writes are idempotent, so a
 /// receipt the manager already read is harmlessly rewritten; execution is
 /// never repeated here — only the answer to it travels again.
+/// Record that execution of one command is starting. The row is cleared
+/// when the outcome becomes durable (any receipt enqueued); a row that
+/// survives a crash means the result is unknown.
+fn mark_execution_started(conn: &rusqlite::Connection, instruction_id: &str) -> Result<()> {
+    let now = chrono::Utc::now().timestamp();
+    conn.execute(
+        &format!(
+            "INSERT OR IGNORE INTO {EXECUTION_LEDGER_TABLE} (instruction_id, started_at) VALUES (?1, ?2)"
+        ),
+        rusqlite::params![instruction_id, now],
+    )?;
+    Ok(())
+}
+
+/// The outcome became durable — the ledger row can go.
+fn clear_execution_ledger(conn: &rusqlite::Connection, instruction_id: &str) -> Result<()> {
+    conn.execute(
+        &format!("DELETE FROM {EXECUTION_LEDGER_TABLE} WHERE instruction_id = ?1"),
+        rusqlite::params![instruction_id],
+    )?;
+    Ok(())
+}
+
+/// Every command whose execution started without a durable outcome.
+fn pending_unknown_executions(store: &SkillStore) -> Result<Vec<String>> {
+    store.with_conn(|conn| {
+        initialize_receipt_outbox(conn)?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT instruction_id FROM {EXECUTION_LEDGER_TABLE} ORDER BY started_at"
+        ))?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    })
+}
+
 fn resend_pending_receipts(store: &SkillStore, config: &SignedExecutorConfig) -> Result<usize> {
     let pending: Vec<(String, String)> = store.with_conn(|conn| {
         initialize_receipt_outbox(conn)?;
@@ -707,6 +762,36 @@ pub fn run_signed_once(store: &SkillStore, config: &SignedExecutorConfig) -> Res
     // Answer for results whose receipt never made it out before anything new.
     report.receipts_published = resend_pending_receipts(store, config)?;
 
+    // Commands whose execution started but whose outcome was never made
+    // durable get an explicit unknown receipt — never silence, never a
+    // blind retry.
+    store.with_conn(|conn| initialize_receipt_outbox(conn))?;
+    for instruction_id in pending_unknown_executions(store)? {
+        let identity = device_identity::ensure_identity(store)?;
+        let receipt = receipt_payload(
+            &instruction_id,
+            RECEIPT_STATUS_UNKNOWN,
+            Some(
+                "execution started but the device cannot confirm the outcome;                  inspect this agent directory by hand"
+                    .to_string(),
+            ),
+            None,
+            None,
+        );
+        let signed_receipt = sign_receipt(&identity, &receipt, chrono::Utc::now().timestamp())?;
+        match signed_channel::publish_signed_receipt(
+            store, &config.url, &config.branch, &config.device_id, &signed_receipt,
+        ) {
+            Ok(_) => {
+                report.receipts_published += 1;
+                store.with_conn(|conn| clear_execution_ledger(conn, &instruction_id))?;
+            }
+            Err(err) => log::warn!(
+                "unknown-outcome receipt for {instruction_id} still unpublished: {err:#}"
+            ),
+        }
+    }
+
     let messages = signed_channel::fetch_signed_commands(&config.url, &config.branch, &config.device_id)?;
     report.fetched = messages.len();
     if messages.is_empty() {
@@ -740,6 +825,9 @@ pub fn run_signed_once(store: &SkillStore, config: &SignedExecutorConfig) -> Res
             continue;
         };
         let _ = prepared; // The slot is consumed; outcome must be receipted.
+        // From here the command has an owner: mark that execution started
+        // so a crash before the receipt lands reads back as unknown.
+        store.with_conn(|conn| mark_execution_started(conn, &message_id))?;
 
         // From here on the device owes a receipt whatever happens.
         let (status, reason, target_path): (&str, Option<String>, Option<String>) =
@@ -777,7 +865,7 @@ pub fn run_signed_once(store: &SkillStore, config: &SignedExecutorConfig) -> Res
         let signed_receipt = sign_receipt(&identity, &receipt, chrono::Utc::now().timestamp())?;
         // Durable first: the execution result exists, so its answer survives
         // even if the push below fails and a later run must re-send it.
-        enqueue_receipt(store, &signed_receipt)?;
+        enqueue_receipt(store, &message_id, &signed_receipt)?;
         let mut receipt_error: Option<String> = None;
         match signed_channel::publish_signed_receipt(
             store, &config.url, &config.branch, &config.device_id, &signed_receipt,
@@ -786,6 +874,7 @@ pub fn run_signed_once(store: &SkillStore, config: &SignedExecutorConfig) -> Res
                 report.receipts_published += 1;
                 store.with_conn(|conn| {
                     initialize_receipt_outbox(conn)?;
+                    clear_execution_ledger(conn, &message_id)?;
                     conn.execute(
                         &format!(
                             "DELETE FROM {RECEIPT_OUTBOX_TABLE} WHERE instruction_id = ?1"
