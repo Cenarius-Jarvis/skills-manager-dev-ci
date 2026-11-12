@@ -818,11 +818,15 @@ mod tests {
         let daemon_root = std::path::PathBuf::from(
             std::env::var("GITDAEMON_ROOT").expect("GITDAEMON_ROOT must be set for executor fixtures"),
         );
-        let served = daemon_root.join(skill_name);
+        // Every test gets its own namespace under the daemon root: two
+        // independently created repos with the same skill name must not
+        // fight over one ref.
+        let namespace = uuid::Uuid::new_v4().simple().to_string();
+        let served = daemon_root.join(&namespace).join(skill_name);
         std::fs::create_dir_all(&served).unwrap();
         git(&served, &["init", "--bare", "-b", "main"]);
         git(&src, &["push", served.to_string_lossy().as_ref(), "main"]);
-        (channel.to_string_lossy().to_string(), format!("git://127.0.0.1/{skill_name}"))
+        (channel.to_string_lossy().to_string(), format!("git://127.0.0.1/{namespace}/{skill_name}"))
     }
 
     /// Pair the device with the manager: the device trusts the manager's
@@ -1096,11 +1100,12 @@ mod tests {
         let daemon_root = std::path::PathBuf::from(
             std::env::var("GITDAEMON_ROOT").expect("GITDAEMON_ROOT must be set for executor fixtures"),
         );
-        let served = daemon_root.join("demo-skill");
+        let namespace = uuid::Uuid::new_v4().simple().to_string();
+        let served = daemon_root.join(&namespace).join("demo-skill");
         std::fs::create_dir_all(&served).unwrap();
         git(&served, &["init", "--bare", "-b", "main"]);
         git(&skill_src, &["push", served.to_string_lossy().as_ref(), "main"]);
-        let skill_url = "git://127.0.0.1/demo-skill".to_string();
+        let skill_url = format!("git://127.0.0.1/{namespace}/demo-skill");
         let channel = manager._dir.path().join("channel.git");
         let channel_arg = channel.to_string_lossy().to_string();
         git(&manager._dir.path(), &["init", "--bare", channel_arg.as_str()]);
