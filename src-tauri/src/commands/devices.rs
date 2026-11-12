@@ -452,19 +452,6 @@ fn create_signed_instruction_internal(
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
     };
-    let payload = signed_channel::SignedCommandPayload {
-        schema: signed_channel::SIGNED_COMMAND_SCHEMA,
-        action: action.trim().to_string(),
-        skill_url: trim(skill_url),
-        skill_branch: trim(skill_branch),
-        skill_subpath: trim(skill_subpath),
-        skill_commit,
-        skill_name: trim(skill_name),
-        agent_key: agent_key.trim().to_string(),
-        issued_by: identity.device_id.clone(),
-        issued_by_name: Some(devices::local_device_name(store)),
-        target_device: device_id.trim().to_string(),
-    };
     // Pin the exact revision the operator is publishing: resolve the
     // source's current head now, and the device refuses any other commit.
     let skill_commit = match action.trim() {
@@ -477,6 +464,19 @@ fn create_signed_instruction_internal(
             }).map_err(git_err)?)
         }
         _ => None,
+    };
+    let payload = signed_channel::SignedCommandPayload {
+        schema: signed_channel::SIGNED_COMMAND_SCHEMA,
+        action: action.trim().to_string(),
+        skill_url: trim(skill_url),
+        skill_branch: trim(skill_branch),
+        skill_subpath: trim(skill_subpath),
+        skill_commit,
+        skill_name: trim(skill_name),
+        agent_key: agent_key.trim().to_string(),
+        issued_by: identity.device_id.clone(),
+        issued_by_name: Some(devices::local_device_name(store)),
+        target_device: device_id.trim().to_string(),
     };
     let now = chrono::Utc::now().timestamp();
     let ttl = ttl_secs.unwrap_or(signed_channel::DEFAULT_COMMAND_TTL_SECS);
