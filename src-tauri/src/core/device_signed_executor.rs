@@ -942,9 +942,14 @@ fn resend_pending_receipts(store: &SkillStore, config: &SignedExecutorConfig) ->
                 now,
                 600,
             )?;
-            message.envelope = refreshed.envelope;
+            // Re-issue the SAME receipt: keep its message id (and payload
+            // hash — the result bytes are unchanged), replace only the
+            // signature and validity window.
+            let mut envelope = refreshed.envelope;
+            envelope.message_id = message.envelope.message_id.clone();
+            envelope.payload_sha256 = message.envelope.payload_sha256.clone();
+            message.envelope = envelope;
             message.signature = hex::encode(refreshed.signature);
-            message.payload_json = serde_json::to_string(&payload)?;
         }
         match signed_channel::publish_signed_receipt(
             store, &config.url, &config.branch, &config.device_id, &message,
