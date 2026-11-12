@@ -812,7 +812,7 @@ mod tests {
     }
 
     /// Channel repo plus a local git repository holding one skill.
-    fn channel_and_source(manager_dir: &Path, skill_name: &str) -> (String, String, GitDaemon) {
+    fn channel_and_source(manager_dir: &Path, skill_name: &str) -> (String, String) {
         let channel = manager_dir.join("channel.git");
         let channel_arg = channel.to_string_lossy().to_string();
         git(&manager_dir.to_path_buf(), &["init", "--bare", channel_arg.as_str()]);
@@ -1245,7 +1245,7 @@ mod tests {
         let device = device_fixture();
         let _override = OverrideGuard::set(&device.base);
         authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
-        let (channel_url, skill_url, _daemon) = channel_and_source(manager._dir.path(), "demo-skill");
+        let (channel_url, skill_url) = channel_and_source(manager._dir.path(), "demo-skill");
         pair(&device, &manager);
 
         let mut payload = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
