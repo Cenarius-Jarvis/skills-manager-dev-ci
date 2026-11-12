@@ -30,9 +30,12 @@ jobs:
       - name: Start fixture git daemon
         shell: bash
         run: |
-          mkdir -p /tmp/gitdaemon-root
-          git daemon --port=9418 --listen=127.0.0.1 --reuseaddr --export-all --base-path=/tmp/gitdaemon-root > /tmp/gitdaemon.log 2>&1 &
-          sleep 1
+          mkdir -p "$GITHUB_WORKSPACE/gitdaemon-root"
+          git daemon --port=9418 --listen=127.0.0.1 --reuseaddr --export-all --base-path="$GITHUB_WORKSPACE/gitdaemon-root" > /tmp/gitdaemon.log 2>&1 &
+          for i in $(seq 1 20); do
+            (echo > /dev/tcp/127.0.0.1/9418) 2>/dev/null && break
+            sleep 0.2
+          done
       - name: Verify device identity signing and pairing approval
         shell: bash
         run: |
@@ -45,6 +48,8 @@ jobs:
           cargo test --locked --manifest-path src-tauri/Cargo.toml --lib signed_channel -- --test-threads=1 2>&1 | tee signed_channel_test.log
       - name: Verify signed command execution and receipts
         shell: bash
+        env:
+          GITDAEMON_ROOT: ${{ github.workspace }}/gitdaemon-root
         run: |
           set -o pipefail
           cargo test --locked --manifest-path src-tauri/Cargo.toml --lib device_signed_executor -- --test-threads=1 2>&1 | tee signed_executor_test.log
