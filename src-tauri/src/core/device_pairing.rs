@@ -224,7 +224,34 @@ impl PreparedDeviceCommand {
 pub fn prepare_claimed_command(
     conn: &mut Connection, claimed: ClaimedDeviceMessage, now: i64,
 ) -> Result<PreparedDeviceCommand> {
-    let env = claimed.envelope();
+    prepare_inner(conn, claimed, now, |_| Ok(()))
+}
+
+/// Atomically consume the preparation slot AND run `extra` inside the same
+/// transaction. The executor uses this to create its execution ledger entry
+/// with the prepared state, so a crash can never land between "the command
+/// may no longer be replayed" and "the command is recorded as in flight":
+/// either both committed (a restart reports it unknown) or neither did (the
+/// claim stays recoverable as unprepared). `extra` failing rolls the whole
+/// transaction back.
+pub fn prepare_claimed_command_with<F>(
+    conn: &mut Connection, claimed: ClaimedDeviceMessage, now: i64,
+    extra: F,
+) -> Result<PreparedDeviceCommand>
+where
+    F: FnOnce(&rusqlite::Transaction) -> Result<()>,
+{
+    prepare_inner(conn, claimed, now, extra)
+}
+
+fn prepare_inner<F>(
+    conn: &mut Connection, claimed: ClaimedDeviceMessage, now: i64,
+    extra: F,
+) -> Result<PreparedDeviceCommand>
+where
+    F: FnOnce(&rusqlite::Transaction) -> Result<()>,
+{
+    let env = claimed.envelope().clone();
     if env.kind != MessageKind::Command { bail!("message is not a command"); }
     let digest = hex::encode(Sha256::digest(claimed.payload()));
     if digest != env.payload_sha256 { bail!("claimed message payload changed"); }
@@ -239,8 +266,33 @@ pub fn prepare_claimed_command(
         params![env.device_id, env.message_id, env.key_id, digest, env.issued_at, env.expires_at, now],
     )?;
     if rows != 1 { bail!("claim missing, expired, already prepared, or key revoked"); }
+    extra(&tx)?;
     tx.commit()?;
     Ok(PreparedDeviceCommand { claimed })
+}
+
+/// Commands that were claimed (their replay slot is taken) but never
+/// entered preparation — the state a crash between claim and prepare
+/// leaves behind. They were never executed, so recovery may run them once.
+/// Bound mirrors the recovery inventory; expired claims are excluded (they
+/// can no longer be verified, and `list_command_recovery` surfaces them).
+pub fn list_unprepared_claims(
+    conn: &Connection, device_id: &str, now: i64,
+) -> Result<Vec<String>> {
+    if !valid_id(device_id) { bail!("invalid device id"); }
+    let mut stmt = conn.prepare(
+        "SELECT b.message_id FROM verified_message_bindings_v1 b
+         JOIN verified_message_inbox_v1 i
+           ON i.device_id = b.device_id AND i.message_id = b.message_id
+         WHERE b.device_id = ?1 AND b.purpose = 'command' AND b.prepared = 0
+               AND b.expires_at > ?2
+         ORDER BY b.issued_at, b.message_id LIMIT 257",
+    )?;
+    let rows = stmt
+        .query_map(params![device_id, now], |row| row.get::<_, String>(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    if rows.len() > 256 { bail!("unprepared claim list exceeds limit; pagination required"); }
+    Ok(rows)
 }
 
 #[cfg(test)]

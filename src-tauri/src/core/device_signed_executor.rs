@@ -199,15 +199,31 @@ fn claim_command(
             MessageKind::Command,
             now,
         ) {
-            Ok(Some(claimed)) => match prepare_claimed_command(conn, claimed, now) {
-                Ok(prepared) => {
-                    // Same connection, immediately after the preparation slot
-                    // is consumed: from this instant the command has a
-                    // durable in-flight record, closing the window where a
-                    // prepared-but-unrecorded crash would leave it silent.
-                    mark_execution_started(conn, &message.envelope.message_id)?;
-                    Ok(Some(prepared))
+            Ok(Some(claimed)) => {
+                // Prepare and create the in-flight record inside ONE
+                // transaction: a crash either leaves the command claimable
+                // as unprepared (never executed) or leaves a durable
+                // in-flight record (a restart reports it unknown). There is
+                // no window in which it silently disappears.
+                match device_pairing::prepare_claimed_command_with(
+                    conn, claimed, now,
+                    |tx| mark_execution_started(tx, &message.envelope.message_id),
+                ) {
+                    Ok(prepared) => Ok(Some(prepared)),
+                    Err(err) => {
+                        #[cfg(test)]
+                        eprintln!(
+                            "claim diag: {} prepare failed: {err:#}",
+                            message.envelope.message_id
+                        );
+                        log::warn!(
+                            "signed command {} could not be prepared: {err}",
+                            message.envelope.message_id
+                        );
+                        Ok(None)
+                    }
                 }
+            }
                 Err(err) => {
                     #[cfg(test)]
                     eprintln!(
@@ -1018,13 +1034,46 @@ pub fn run_signed_once(store: &SkillStore, config: &SignedExecutorConfig) -> Res
         }
     }
 
+    let identity = device_identity::ensure_identity(store)?;
+    let now = chrono::Utc::now().timestamp();
+
+    // Commands that were claimed but never prepared were never executed.
+    // Recover them through the same production path: resume the signed
+    // bytes, prepare+ledger atomically, execute once, answer.
+    let unprepared_ids = store.with_conn(|conn| {
+        device_pairing::list_unprepared_claims(conn, &config.device_id, now)
+    })?;
+    for claim_id in unprepared_ids {
+        let claimed = match store.with_conn_mut(|conn| {
+            device_pairing::resume_unprepared_claim(
+                conn, &config.device_id, &claim_id, MessageKind::Command, now,
+            )
+        }) {
+            Ok(Some(claimed)) => claimed,
+            _ => continue, // expired or trust changed: list_command_recovery surfaces it
+        };
+        let prepared = store.with_conn_mut(|conn| {
+            device_pairing::prepare_claimed_command_with(conn, claimed, now, |tx| {
+                mark_execution_started(tx, &claim_id)
+            })
+        });
+        let Ok(prepared) = prepared else { continue };
+        let payload: SignedCommandPayload = match serde_json::from_slice(prepared.payload()) {
+            Ok(payload) => payload,
+            Err(err) => {
+                log::warn!("recovered command {claim_id} is malformed: {err:#}");
+                continue;
+            }
+        };
+        log::info!("recovered unprepared command {claim_id} for execution");
+        execute_prepared_and_ack(store, config, &identity, &claim_id, &payload, &mut report);
+    }
+
     let messages = signed_channel::fetch_signed_commands(&config.url, &config.branch, &config.device_id)?;
     report.fetched = messages.len();
     if messages.is_empty() {
         return Ok(report);
     }
-    let identity = device_identity::ensure_identity(store)?;
-    let now = chrono::Utc::now().timestamp();
 
     for message in messages.iter().take(config.max_commands) {
         let message_id = message.envelope.message_id.clone();
@@ -1051,84 +1100,123 @@ pub fn run_signed_once(store: &SkillStore, config: &SignedExecutorConfig) -> Res
             continue;
         };
         let _ = prepared; // The slot is consumed; outcome must be receipted.
-        // The in-flight record was written inside claim_command, right
-        // after the preparation slot was consumed.
-
-        // From here on the device owes a receipt whatever happens.
-        let (status, reason, target_path): (&str, Option<String>, Option<String>) =
-                match signed_channel::validate_signed_command_payload(&payload)
-                    .and_then(|_| match payload.action.as_str() {
-                        devices::ACTION_DEPLOY => execute_deploy(store, &payload).map(|path| path),
-                        devices::ACTION_UNDEPLOY => execute_undeploy(store, &payload).map(|path| path),
-                        other => bail!("unsupported action {other:?}"),
-                    }) {
-                Ok(path) => (devices::TASK_STATE_SUCCESS, None, Some(path.to_string_lossy().to_string())),
-                Err(err) => {
-                    let text = format!("{err:#}");
-                    let rejected = text.contains("not authorized on this device")
-                        || text.contains("refusing to delete")
-                        || text.contains("was modified locally")
-                        || text.contains("already installed from a different source")
-                        || text.contains("exists without a library record")
-                        || text.contains("no recorded content hash");
-                    let status = if rejected {
-                        report.rejected += 1;
-                        RECEIPT_STATUS_REJECTED
-                    } else {
-                        report.failed += 1;
-                        RECEIPT_STATUS_FAILED
-                    };
-                    (status, Some(text), None)
-                }
-            };
-        if status == RECEIPT_STATUS_SUCCESS {
-            report.executed += 1;
-        }
-
-        let receipt = receipt_payload(
-            &message_id, status, reason.clone(), Some(&payload), target_path.clone(),
-        );
-        let signed_receipt = sign_receipt(&identity, &receipt, chrono::Utc::now().timestamp())?;
-        // Durable first: the execution result exists, so its answer survives
-        // even if the push below fails and a later run must re-send it.
-        enqueue_receipt_and_clear_ledger(store, &message_id, &signed_receipt)?;
-        let mut receipt_error: Option<String> = None;
-        match signed_channel::publish_signed_receipt(
-            store, &config.url, &config.branch, &config.device_id, &signed_receipt,
-        ) {
-            Ok(_) => {
-                report.receipts_published += 1;
-                store.with_conn(|conn| {
-                    initialize_receipt_outbox(conn)?;
-                    clear_execution_ledger(conn, &message_id)?;
-                    conn.execute(
-                        &format!(
-                            "DELETE FROM {RECEIPT_OUTBOX_TABLE} WHERE instruction_id = ?1"
-                        ),
-                        rusqlite::params![message_id],
-                    )?;
-                    Ok(())
-                })?;
-            }
-            Err(err) => {
-                log::error!(
-                    "receipt for {message_id} could not be published (execution result stands): {err:#}"
-                );
-                receipt_error = Some(format!("{err:#}"));
-            }
-        }
-        report.outcomes.push(CommandOutcome {
-            message_id,
-            status: status.to_string(),
-            detail: match (reason, receipt_error) {
-                (Some(r), Some(pe)) => format!("{r}; receipt unpublished: {pe}"),
-                (Some(r), None) => r,
-                (None, Some(pe)) => format!("receipt unpublished: {pe}"),
-                (None, None) => target_path.unwrap_or_default(),
-            },
-        });
+        // The in-flight record was written inside claim_command, in the
+        // same transaction as the preparation slot itself.
+        execute_prepared_and_ack(store, config, &identity, &message_id, &payload, &mut report);
     }
     Ok(report)
+}
+
+/// Execute one prepared command and answer with a signed receipt. Shared by
+/// the channel loop and the unprepared-claim recovery path, so a recovered
+/// command runs through exactly the same production code.
+fn execute_prepared_and_ack(
+    store: &SkillStore,
+    config: &SignedExecutorConfig,
+    identity: &DeviceIdentity,
+    message_id: &str,
+    payload: &SignedCommandPayload,
+    report: &mut SignedRunReport,
+) {
+    // From here on the device owes a receipt whatever happens.
+    let (status, reason, target_path): (&str, Option<String>, Option<String>) =
+            match signed_channel::validate_signed_command_payload(payload)
+                .and_then(|_| match payload.action.as_str() {
+                    devices::ACTION_DEPLOY => execute_deploy(store, payload).map(|path| path),
+                    devices::ACTION_UNDEPLOY => execute_undeploy(store, payload).map(|path| path),
+                    other => bail!("unsupported action {other:?}"),
+                }) {
+            Ok(path) => (devices::TASK_STATE_SUCCESS, None, Some(path.to_string_lossy().to_string())),
+            Err(err) => {
+                let text = format!("{err:#}");
+                let rejected = text.contains("not authorized on this device")
+                    || text.contains("refusing to delete")
+                    || text.contains("was modified locally")
+                    || text.contains("already installed from a different source")
+                    || text.contains("exists without a library record")
+                    || text.contains("no recorded content hash");
+                let status = if rejected {
+                    report.rejected += 1;
+                    RECEIPT_STATUS_REJECTED
+                } else {
+                    report.failed += 1;
+                    RECEIPT_STATUS_FAILED
+                };
+                (status, Some(text), None)
+            }
+        };
+    if status == RECEIPT_STATUS_SUCCESS {
+        report.executed += 1;
+    }
+
+    let receipt = receipt_payload(
+        message_id, status, reason.clone(), Some(payload), target_path.clone(),
+    );
+    let signed_receipt = match sign_receipt(identity, &receipt, chrono::Utc::now().timestamp()) {
+        Ok(signed) => signed,
+        Err(err) => {
+            log::error!("receipt for {message_id} could not be signed: {err:#}");
+            report.outcomes.push(CommandOutcome {
+                message_id: message_id.to_string(),
+                status: status.to_string(),
+                detail: format!("{}; receipt signing failed: {err:#}", reason.unwrap_or_default()),
+            });
+            return;
+        }
+    };
+    // Durable first: the execution result exists, so its answer survives
+    // even if the push below fails and a later run must re-send it.
+    if let Err(err) = enqueue_receipt_and_clear_ledger(store, message_id, &signed_receipt) {
+        log::error!("receipt for {message_id} could not be persisted: {err:#}");
+        report.outcomes.push(CommandOutcome {
+            message_id: message_id.to_string(),
+            status: status.to_string(),
+            detail: format!("{}; receipt persistence failed: {err:#}", reason.unwrap_or_default()),
+        });
+        return;
+    }
+    let mut receipt_error: Option<String> = None;
+    match signed_channel::publish_signed_receipt(
+        store, &config.url, &config.branch, &config.device_id, &signed_receipt,
+    ) {
+        Ok(_) => {
+            report.receipts_published += 1;
+            // The push succeeded; the durable copy of the answer is on the
+            // channel and the local outbox copy is no longer needed.
+            if let Err(err) = store.with_conn(|conn| {
+                initialize_receipt_outbox(conn)?;
+                conn.execute(
+                    &format!(
+                        "DELETE FROM {RECEIPT_OUTBOX_TABLE} WHERE instruction_id = ?1"
+                    ),
+                    rusqlite::params![message_id],
+                )?;
+                Ok(())
+            }) {
+                log::warn!(
+                    "receipt for {message_id} was published but the local outbox row could not be removed; \
+                     a later run re-publishes the identical bytes"
+                );
+                let _ = err;
+            }
+        }
+        Err(err) => {
+            log::error!(
+                "receipt for {message_id} could not be published (execution result stands): {err:#}"
+            );
+            receipt_error = Some(format!("{err:#}"));
+        }
+    }
+    report.outcomes.push(CommandOutcome {
+        message_id: message_id.to_string(),
+        status: status.to_string(),
+        detail: match (reason, receipt_error) {
+            (Some(r), Some(pe)) => format!("{r}; receipt unpublished: {pe}"),
+            (Some(r), None) => r,
+            (None, Some(pe)) => format!("receipt unpublished: {pe}"),
+            (None, None) => target_path.unwrap_or_default(),
+        },
+    });
 }
 
 #[cfg(test)]
