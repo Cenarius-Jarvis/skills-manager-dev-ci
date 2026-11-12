@@ -224,19 +224,6 @@ fn claim_command(
                     }
                 }
             }
-                Err(err) => {
-                    #[cfg(test)]
-                    eprintln!(
-                        "claim diag: {} prepare failed: {err:#}",
-                        message.envelope.message_id
-                    );
-                    log::warn!(
-                        "signed command {} could not be prepared: {err}",
-                        message.envelope.message_id
-                    );
-                    Ok(None)
-                }
-            },
             Ok(None) => {
                 log::info!(
                     "signed command {} is a replay; ignored",
