@@ -2932,8 +2932,8 @@ mod tests {
         // REAL child process: runs the production update and exits for real
         // right after codex's files were replaced, before its record swap.
         checkpoint_for_child(&device.store);
-        print_db_state(&device.base, "parent-before-spawn-record-update");
-        let status = spawn_crash_child("after-target-sync", "codex", &device.base, &channel_url);
+        print_db_state(&device._dir.path(), "parent-before-spawn-record-update");
+        let status = spawn_crash_child("after-target-sync", "codex", &device._dir.path(), &channel_url);
         assert_eq!(status.code(), Some(42), "the child must die at the injection point");
 
         // Reopen the store fresh (a real restart) and observe the split.
@@ -3042,8 +3042,8 @@ mod tests {
         let update = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
         publish_command(&manager, &channel_url, &update);
         checkpoint_for_child(&device.store);
-        print_db_state(&device.base, "parent-before-spawn-library-swap");
-        let status = spawn_crash_child("after-library-rename", "", &device.base, &channel_url);
+        print_db_state(&device._dir.path(), "parent-before-spawn-library-swap");
+        let status = spawn_crash_child("after-library-rename", "", &device._dir.path(), &channel_url);
         assert_eq!(status.code(), Some(42));
 
         // Reopen: the library directory is gone; the old version lives only
