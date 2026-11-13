@@ -1,10 +1,10 @@
-name: Device identity pairing and signed inbox validation
+name: Real process crash recovery checks
 # Rust sources and this workflow file both retrigger CI; frontend-only
 # changes do not. The test-build feature keeps preview installs out of the
 # production data directory (see central_repo.rs).
 on:
   push:
-    branches: [codex/device-identity-pairing]
+    branches: [codex/restore-crash-tests]
     paths: ['.github/workflows/two-device-simulation.yml', 'src-tauri/**']
 permissions:
   contents: read
