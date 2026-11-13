@@ -79,10 +79,10 @@ jobs:
         run: |
           for f in signed_executor_test.log identity_test.log signed_channel_test.log pairing_test.log roundtrip_test.log nativedeploy_test.log executor_test.log; do
             [ -f "$f" ] || continue
-            if grep -qE "claim diag|receipt unpublished" "$f" 2>/dev/null; then
-              LOG=$(grep -E "claim diag|receipt unpublished" "$f" | tail -c 2400)
+            if grep -qE "crash child|claim diag|receipt unpublished|full report" "$f" 2>/dev/null; then
+              LOG=$(grep -E "crash child|claim diag|receipt unpublished|panicked at|full report" "$f" | tail -c 2600)
             else
-              LOG=$(tail -c 2800 "$f")
+              LOG=$(tail -c 2600 "$f")
             fi
             LOG=${LOG//$'\n'/%0A}
             echo "::error::$f: $LOG"
