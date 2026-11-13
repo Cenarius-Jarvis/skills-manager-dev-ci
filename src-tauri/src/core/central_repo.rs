@@ -91,19 +91,7 @@ struct RepoPathConfig {
 }
 
 fn default_base_dir() -> PathBuf {
-    let mut dir = home_base_dir();
-    if cfg!(feature = "test-build") {
-        // Test builds isolate every file under a suffixed directory so a
-        // preview install can never touch the production store, even when
-        // both run on the same machine.
-        let name = dir
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        dir.pop();
-        dir.push(format!("{name}-test"));
-    }
-    dir
+    home_base_dir()
 }
 
 /// `~/.skills-manager`, ignoring any configured relocation.
@@ -118,11 +106,11 @@ pub fn home_base_dir() -> PathBuf {
         .unwrap()
         .clone()
     {
-        return path.join(".skills-manager");
+        return path.join(if cfg!(feature = "test-build") { ".skills-manager-test" } else { ".skills-manager" });
     }
     dirs::home_dir()
         .expect("Cannot determine home directory")
-        .join(".skills-manager")
+        .join(if cfg!(feature = "test-build") { ".skills-manager-test" } else { ".skills-manager" })
 }
 
 #[cfg(test)]
