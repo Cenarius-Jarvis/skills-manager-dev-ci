@@ -2745,6 +2745,7 @@ mod tests {
             "--exact",
             concat!(module_path!(), "::crash_child_worker"),
             "--nocapture",
+            "--test-threads=1",
         ])
         .env("SM_CRASH_ROLE", "child")
         .env("SM_CRASH_POINT", point)
@@ -2774,10 +2775,13 @@ mod tests {
         let (store, config) = child_setup(&base);
         // One production cycle; the injection point inside it exits the
         // process for real.
-        let _ = run_signed_once(&store, &config);
-        // If the injection did not fire, still terminate abruptly so the
-        // parent never mistakes a clean return for a crash.
-        std::process::exit(42);
+        let report = run_signed_once(&store, &config);
+        // If we ever get here, the injection did not fire: report the run so
+        // the parent's log shows why, and die loudly.
+        panic!(
+            "crash child finished WITHOUT hitting the injection: fetched={} executed={} skipped={} failed={} rejected={} published={}",
+            report.fetched, report.executed, report.skipped, report.failed, report.rejected, report.receipts_published
+        );
     }
 
     /// ② Real subprocess exit after the first target's files were replaced
