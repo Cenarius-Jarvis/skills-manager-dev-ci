@@ -2747,9 +2747,11 @@ mod tests {
     /// (a fresh OS process, not a thread of this one) sees everything the
     /// parent wrote through its own connection.
     fn checkpoint_for_child(store: &SkillStore) {
-        store.with_conn(|conn| {
-            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
-        }).unwrap();
+        store
+            .with_conn(|conn| {
+                conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            })
+            .unwrap();
     }
 
     fn spawn_crash_child(point: &str, agent: &str, base: &Path, channel_url: &str) -> std::process::ExitStatus {
