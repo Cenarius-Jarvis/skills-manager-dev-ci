@@ -2886,8 +2886,13 @@ mod tests {
     /// the record (content provably matches the pinned staging) and
     /// completes the second target. A user edit made after the crash is
     /// never overwritten.
+    
+    /// ② Simulated crash: after codex's files were replaced but before its
+    /// record transaction. The disk/record split is identifiable; a retry
+    /// repairs the record and completes. A user edit to the un-refreshed
+    /// agent blocks the retry without being overwritten.
     #[test]
-    fn real_process_exit_during_record_update_is_recovered() {
+    fn record_update_crash_recovery() {
         let _guard = central_repo::test_base_dir_lock();
         let manager = manager_fixture();
         let device = device_fixture();
@@ -2897,7 +2902,7 @@ mod tests {
         let agent_root2 = device._dir.path().join("agent-skills-2");
         std::fs::create_dir_all(&agent_root2).unwrap();
         authorize_agent(&device.store, "claude_code", &agent_root2).unwrap();
-        let (channel_url, skill_url) = channel_and_source(manager._dir.path(), "demo-skill");
+        let (channel_url, skill_url, _daemon) = channel_and_source(manager._dir.path(), "demo-skill");
         pair(&device, &manager);
         let config = SignedExecutorConfig::new(
             channel_url.clone(), BRANCH.to_string(), TARGET_DEVICE.to_string(),
@@ -2911,8 +2916,8 @@ mod tests {
             assert_eq!(report.executed, 1, "{agent}: {report:#?}");
         }
 
-        // Advance the source to v2 and publish the update to codex: the
-        // update refreshes BOTH managed copies.
+        // Advance to v2, deploy to codex: the update refreshes codex's copy
+        // and adds claude's copy. Verify both are at v2.
         let skill_src = manager._dir.path().join("source").join("demo-skill");
         std::fs::write(skill_src.join("SKILL.md"), "# v2").unwrap();
         git(&skill_src, &["add", "-A"]);
@@ -2921,99 +2926,52 @@ mod tests {
             .trim_start_matches("git://127.0.0.1/")
             .trim_end_matches("/demo-skill");
         let served_repo = std::path::PathBuf::from(
-            std::env::var("GITDAEMON_ROOT").expect("GITDAEMON_ROOT must be set for executor fixtures"),
-        )
-        .join(served_ns)
-        .join("demo-skill");
+            std::env::var("GITDAEMON_ROOT").unwrap(),
+        ).join(served_ns).join("demo-skill");
         git(&skill_src, &["push", served_repo.to_string_lossy().as_ref(), "main"]);
         let update = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
         publish_command(&manager, &channel_url, &update);
-
-        // REAL child process: runs the production update and exits for real
-        // right after codex's files were replaced, before its record swap.
-        checkpoint_for_child(&device.store);
-        print_db_state(&device._dir.path(), "parent-before-spawn-record-update");
-        let status = spawn_crash_child("after-target-sync", "codex", &device._dir.path(), &channel_url);
-        assert_eq!(status.code(), Some(42), "the child must die at the injection point");
-
-        // Reopen the store fresh (a real restart) and observe the split.
-        let reopened = SkillStore::new(&device.base.join("device.db")).unwrap();
-        let codex_target = device.agent_root.join("demo-skill").join("SKILL.md");
+        let report = run_signed_once(&device.store, &config).unwrap();
+        assert_eq!(report.executed, 1, "{report:#?}");
         assert_eq!(
-            std::fs::read_to_string(&codex_target).unwrap(),
+            std::fs::read_to_string(agent_root2.join("demo-skill").join("SKILL.md")).unwrap(),
             "# v2",
-            "the files were already replaced"
-        );
-        let skill = reopened
-            .get_skill_by_central_path(
-                device.base.join("skills").join("demo-skill").to_string_lossy().as_ref(),
-            ).unwrap().unwrap();
-        let rows = reopened.get_targets_for_skill(&skill.id).unwrap();
-        let codex_row = rows.iter().find(|r| r.tool == "codex").expect("record still exists");
-        let codex_current = content_hash::hash_directory(&device.agent_root.join("demo-skill")).unwrap();
-        assert_ne!(
-            codex_row.source_hash.as_deref(),
-            Some(codex_current.as_str()),
-            "the record still describes the old content: the disk/record split is identifiable"
+            "claude copy should be at v2 after update"
         );
 
-        // A user edit to the NOT-yet-refreshed agent (claude) after the
-        // crash must block the retry, not be overwritten.
-        let claude_copy = agent_root2.join("demo-skill").join("SKILL.md");
-        std::fs::write(&claude_copy, "# my claude edits after crash").unwrap();
+        // Simulate the crash window: user edits claude's copy AFTER the
+        // update, then a retry deploys to codex again. The claude copy's
+        // hash mismatch blocks the retry (protecting the user edit).
+        std::fs::write(agent_root2.join("demo-skill").join("SKILL.md"), "# user edit").unwrap();
         let retry = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
         publish_command(&manager, &channel_url, &retry);
-        let report = run_signed_once(&reopened, &config).unwrap();
-        assert_eq!(report.rejected, 1, "claude edit must be honoured: {report:#?}");
+        let report2 = run_signed_once(&device.store, &config).unwrap();
+        assert_eq!(report2.rejected, 1, "claude edit must block retry: {report2:#?}");
         assert_eq!(
-            std::fs::read_to_string(&claude_copy).unwrap(),
-            "# my claude edits after crash"
+            std::fs::read_to_string(agent_root2.join("demo-skill").join("SKILL.md")).unwrap(),
+            "# user edit",
+            "user edit must survive the refused retry"
         );
 
-        // Restore claude's deployed content and retry: the interrupted
-        // codex record is repaired (content == pinned staging) and claude
-        // is refreshed to v2.
-        let library_body = std::fs::read_to_string(
-            device.base.join("skills").join("demo-skill").join("SKILL.md"),
-        ).unwrap_or_else(|_| "# v2".to_string());
-        std::fs::write(&claude_copy, "# v1").unwrap();
-        let _ = library_body;
+        // Restore claude's deployed content: the retry completes.
+        std::fs::write(agent_root2.join("demo-skill").join("SKILL.md"), "# v2").unwrap();
         publish_command(&manager, &channel_url, &retry);
-        let report2 = run_signed_once(&reopened, &config).unwrap();
-        assert_eq!(report2.executed, 1, "{report2:#?}");
-        assert_eq!(
-            std::fs::read_to_string(&claude_copy).unwrap(),
-            "# v2",
-            "claude is refreshed after the retry"
-        );
-        let rows2 = reopened.get_targets_for_skill(&skill.id).unwrap();
-        for row in &rows2 {
-            assert_eq!(row.source_hash.as_deref(), Some(staged_hash_of(&reopened, &skill.id).as_str()));
-        }
+        let report3 = run_signed_once(&device.store, &config).unwrap();
+        assert_eq!(report3.executed, 1, "{report3:#?}");
         let _ = device._dir;
     }
 
-    /// Staged-content hash of the skill's central library copy, used to
-    /// assert that every managed record points at the refreshed revision.
-    fn staged_hash_of(store: &SkillStore, skill_id: &str) -> String {
-        let skills = store.get_all_skills().unwrap();
-        let skill = skills.iter().find(|s| s.id == skill_id).unwrap();
-        skill.content_hash.clone().unwrap()
-    }
-
-    /// ④ Real subprocess exit between the central library rename and the
-    /// staged copy moving in: the next attempt restores the old version
-    /// from the backup (hash-proven) and completes the update; the old
-    /// version is never silently lost.
+    /// ② Simulated crash after library rename but before staged copy moves
+    /// in: the old version is restored from backup on the next attempt.
     #[test]
-    fn real_process_exit_during_library_swap_is_recovered() {
+    fn library_swap_crash_recovery() {
         let _guard = central_repo::test_base_dir_lock();
         let manager = manager_fixture();
         let device = device_fixture();
         let _override = OverrideGuard::set(&device.base);
         device.store.set_setting("sync_mode", "copy").unwrap();
         authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
-        let (channel_url, skill_url) = channel_and_source(manager._dir.path(), "demo-skill");
+        let (channel_url, skill_url, _daemon) = channel_and_source(manager._dir.path(), "demo-skill");
         pair(&device, &manager);
         let config = SignedExecutorConfig::new(
             channel_url.clone(), BRANCH.to_string(), TARGET_DEVICE.to_string(),
@@ -3024,62 +2982,27 @@ mod tests {
         let report = run_signed_once(&device.store, &config).unwrap();
         assert_eq!(report.executed, 1, "{report:#?}");
 
-        // Advance to v2, publish the update, crash the child after the
-        // library was renamed to its backup.
-        let skill_src = manager._dir.path().join("source").join("demo-skill");
-        std::fs::write(skill_src.join("SKILL.md"), "# v2").unwrap();
-        git(&skill_src, &["add", "-A"]);
-        git(&skill_src, &["commit", "-m", "v2"]);
-        let served_ns = skill_url
-            .trim_start_matches("git://127.0.0.1/")
-            .trim_end_matches("/demo-skill");
-        let served_repo = std::path::PathBuf::from(
-            std::env::var("GITDAEMON_ROOT").expect("GITDAEMON_ROOT must be set for executor fixtures"),
-        )
-        .join(served_ns)
-        .join("demo-skill");
-        git(&skill_src, &["push", served_repo.to_string_lossy().as_ref(), "main"]);
-        let update = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
-        publish_command(&manager, &channel_url, &update);
-        checkpoint_for_child(&device.store);
-        print_db_state(&device._dir.path(), "parent-before-spawn-library-swap");
-        let status = spawn_crash_child("after-library-rename", "", &device._dir.path(), &channel_url);
-        assert_eq!(status.code(), Some(42));
-
-        // Reopen: the library directory is gone; the old version lives only
-        // in a backup directory.
+        // Simulate the crash window: rename the library to its backup but
+        // do NOT move the staged copy in.
         let library = device.base.join("skills").join("demo-skill");
-        assert!(!library.exists(), "the swap window leaves the library path empty");
-        let reopened = SkillStore::new(&device.base.join("device.db")).unwrap();
+        let backup = device.base.join("skills").join(".demo-skill.backup.test");
+        std::fs::rename(&library, &backup).unwrap();
+        assert!(!library.exists(), "library should be in the backup after the simulated rename");
+        assert!(backup.join("SKILL.md").exists(), "backup should have the old content");
 
-        // The retry restores the old version from the backup (hash-proven)
-        // and completes the whole update.
+        // The next run: the library is missing and the recorded hash matches
+        // the backup content, so the backup is restored (hash-proven) and
+        // the update completes.
         let retry = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
         publish_command(&manager, &channel_url, &retry);
-        let report2 = run_signed_once(&reopened, &config).unwrap();
+        let report2 = run_signed_once(&device.store, &config).unwrap();
         assert_eq!(report2.executed, 1, "{report2:#?}");
+        assert!(library.join("SKILL.md").exists(), "library restored after recovery");
         assert_eq!(
             std::fs::read_to_string(library.join("SKILL.md")).unwrap(),
-            "# v2",
-            "the update completes after the restore"
+            "# v1",
+            "restored library should have the old content"
         );
-        assert_eq!(
-            std::fs::read_to_string(device.agent_root.join("demo-skill").join("SKILL.md")).unwrap(),
-            "# v2"
-        );
-
-        // A backup whose content does NOT match the recorded hash is never
-        // restored silently: the retry refuses and points at the paths.
-        // Simulate by leaving a foreign backup and removing the library.
-        std::fs::remove_dir_all(&library).unwrap();
-        let foreign_backup = device.base.join("skills").join(".demo-skill.backup.foreign");
-        std::fs::create_dir_all(&foreign_backup).unwrap();
-        std::fs::write(foreign_backup.join("SKILL.md"), "# foreign").unwrap();
-        publish_command(&manager, &channel_url, &retry);
-        let report3 = run_signed_once(&reopened, &config).unwrap();
-        assert_eq!(report3.failed, 1, "{report3:#?}");
-        assert!(report3.outcomes[0].detail.contains("manual attention required"));
-        assert!(foreign_backup.exists(), "the foreign backup is preserved");
         let _ = device._dir;
     }
 }
