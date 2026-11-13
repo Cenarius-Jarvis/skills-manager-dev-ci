@@ -347,6 +347,14 @@ pub fn validate_state_report(report: &DeviceStateReport) -> Result<()> {
     Ok(())
 }
 
+fn validate_state_report_for_directory(report: &DeviceStateReport, device_id: &str) -> Result<()> {
+    validate_state_report(report)?;
+    if report.device_id != device_id {
+        bail!("state report device id does not match its channel directory");
+    }
+    Ok(())
+}
+
 pub const RECEIPT_REASONS: &[&str] = &[
     "none",
     "conflict",
@@ -1212,7 +1220,7 @@ pub fn fetch_channel_snapshot(url: &str, branch: &str) -> Result<ChannelSnapshot
         if let Some(report) =
             parse_json_file::<DeviceStateReport>(&device_dir.join("state.json"), &mut snapshot.warnings)
         {
-            match validate_state_report(&report) {
+            match validate_state_report_for_directory(&report, &device_id) {
                 Ok(()) => snapshot.states.push(report),
                 Err(err) => snapshot
                     .warnings
@@ -1476,6 +1484,30 @@ pub fn import_snapshot(store: &SkillStore, snapshot: &ChannelSnapshot) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn channel_rejects_state_report_in_another_device_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let remote = temp.path().join("channel.git");
+        run_git(None, None, &["init", "--bare", &remote.to_string_lossy()]).unwrap();
+        let url = remote.to_string_lossy().to_string();
+        let (_work, dir) = prepare_working_copy(&url, "devices-test").unwrap();
+        let device_dir = dir.join("devices").join("device-a");
+        std::fs::create_dir_all(&device_dir).unwrap();
+        let report = DeviceStateReport {
+            schema: DEVICE_PROTOCOL_VERSION,
+            device_id: "device-b".into(),
+            reported_at: 1000,
+            executing: vec![],
+            agents: vec![],
+        };
+        std::fs::write(device_dir.join("state.json"), serde_json::to_vec(&report).unwrap()).unwrap();
+        commit_and_push(&dir, &url, "devices-test", "test", "add mismatched state").unwrap();
+
+        let snapshot = fetch_channel_snapshot(&url, "devices-test").unwrap();
+        assert!(snapshot.states.is_empty());
+        assert!(snapshot.warnings.iter().any(|warning| warning.contains("does not match")));
+    }
 
     fn instruction(id: &str) -> DeviceInstruction {
         DeviceInstruction {

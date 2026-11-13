@@ -1,0 +1,28 @@
+name: Device state directory validation
+on:
+  push:
+    branches: [codex/signed-device-status]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: src-tauri
+      - name: Install Linux runner libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: Test mismatched device state is rejected
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib channel_rejects_state_report_in_another_device_directory
+      - name: Test unsigned remote execution remains blocked
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib device_executor_unsigned_live_run_is_disabled_before_state_creation
