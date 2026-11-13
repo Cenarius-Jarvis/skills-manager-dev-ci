@@ -2902,7 +2902,7 @@ mod tests {
         let agent_root2 = device._dir.path().join("agent-skills-2");
         std::fs::create_dir_all(&agent_root2).unwrap();
         authorize_agent(&device.store, "claude_code", &agent_root2).unwrap();
-        let (channel_url, skill_url, _daemon) = channel_and_source(manager._dir.path(), "demo-skill");
+        let (channel_url, skill_url) = channel_and_source(manager._dir.path(), "demo-skill");
         pair(&device, &manager);
         let config = SignedExecutorConfig::new(
             channel_url.clone(), BRANCH.to_string(), TARGET_DEVICE.to_string(),
@@ -2971,7 +2971,7 @@ mod tests {
         let _override = OverrideGuard::set(&device.base);
         device.store.set_setting("sync_mode", "copy").unwrap();
         authorize_agent(&device.store, "codex", &device.agent_root).unwrap();
-        let (channel_url, skill_url, _daemon) = channel_and_source(manager._dir.path(), "demo-skill");
+        let (channel_url, skill_url) = channel_and_source(manager._dir.path(), "demo-skill");
         pair(&device, &manager);
         let config = SignedExecutorConfig::new(
             channel_url.clone(), BRANCH.to_string(), TARGET_DEVICE.to_string(),
