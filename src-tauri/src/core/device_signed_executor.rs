@@ -2822,10 +2822,10 @@ mod tests {
                 let mut stmt = conn
                     .prepare("SELECT device_id, key_id FROM device_trusted_keys_v1")
                     .unwrap();
-                stmt.query_map([], |row| {
+                Ok(stmt.query_map([], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                 })
-                .map(|rows| rows.collect::<std::result::Result<Vec<_>, _>>().unwrap())
+                .map(|rows| rows.collect::<std::result::Result<Vec<_>, _>>().unwrap())?)
             })
             .unwrap();
             eprintln!("crash child db state: trust_pairs={pairs:?}");
