@@ -1297,9 +1297,9 @@ pub fn run_signed_once(store: &SkillStore, config: &SignedExecutorConfig) -> Res
     // Commands that were claimed but never prepared were never executed.
     // Recover them through the same production path: resume the signed
     // bytes, prepare+ledger atomically, execute once, answer.
-    let unpaired_claims: Vec<(String, String)> = store
-        .with_conn(|conn| Ok(device_pairing::list_unprepared_claims(conn, now)))
-        .unwrap_or_default();
+    let unpaired_claims = store.with_conn(|conn| {
+        device_pairing::list_unprepared_claims(conn, now)
+    })?;
     #[cfg(test)]
     eprintln!("recovery diag: unprepared claims = {unpaired_claims:?}");
     for (manager_device, claim_id) in unpaired_claims {
