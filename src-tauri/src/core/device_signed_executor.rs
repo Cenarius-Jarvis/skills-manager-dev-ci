@@ -2778,10 +2778,13 @@ mod tests {
         let report = run_signed_once(&store, &config);
         // If we ever get here, the injection did not fire: report the run so
         // the parent's log shows why, and die loudly.
-        panic!(
-            "crash child finished WITHOUT hitting the injection: fetched={} executed={} skipped={} failed={} rejected={} published={}",
-            report.fetched, report.executed, report.skipped, report.failed, report.rejected, report.receipts_published
-        );
+        match report {
+            Ok(report) => panic!(
+                "crash child finished WITHOUT hitting the injection: fetched={} executed={} skipped={} failed={} rejected={} published={}",
+                report.fetched, report.executed, report.skipped, report.failed, report.rejected, report.receipts_published
+            ),
+            Err(err) => panic!("crash child run FAILED (the injection fired earlier?): {err:#}"),
+        }
     }
 
     /// ② Real subprocess exit after the first target's files were replaced
