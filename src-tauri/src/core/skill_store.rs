@@ -1608,6 +1608,42 @@ impl SkillStore {
         Ok(())
     }
 
+    /// Apply one complete snapshot atomically. An older or duplicate report
+    /// must never replace fresher state, including during concurrent refreshes.
+    pub fn apply_device_state_if_newer(
+        &self,
+        device_id: &str,
+        seen_at: i64,
+        state_commit: &str,
+        rows: &[DeviceSkillRecordRow],
+    ) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let tx = conn.unchecked_transaction()?;
+        let changed = tx.execute(
+            "UPDATE devices SET last_seen_at = ?2, last_state_commit = ?3
+             WHERE id = ?1 AND (last_seen_at IS NULL OR last_seen_at < ?2)",
+            params![device_id, seen_at, state_commit],
+        )?;
+        if changed == 0 {
+            tx.commit()?;
+            return Ok(false);
+        }
+        tx.execute("DELETE FROM device_skill_records WHERE device_id = ?1", params![device_id])?;
+        for row in rows {
+            if row.device_id != device_id {
+                anyhow::bail!("state record device id does not match snapshot");
+            }
+            tx.execute(
+                "INSERT INTO device_skill_records
+                    (device_id, agent_key, skill_name, content_hash, deployed_at, reported_commit)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![row.device_id, row.agent_key, row.skill_name, row.content_hash, row.deployed_at, row.reported_commit],
+            )?;
+        }
+        tx.commit()?;
+        Ok(true)
+    }
+
     pub fn get_device_skill_records(
         &self,
         device_id: Option<&str>,

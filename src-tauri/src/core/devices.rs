@@ -1360,7 +1360,6 @@ pub fn import_snapshot(store: &SkillStore, snapshot: &ChannelSnapshot) -> Result
     }
 
     for report in &snapshot.states {
-        store.update_device_last_seen(&report.device_id, report.reported_at, &snapshot.head_commit)?;
         let rows: Vec<DeviceSkillRecordRow> = report
             .agents
             .iter()
@@ -1375,8 +1374,11 @@ pub fn import_snapshot(store: &SkillStore, snapshot: &ChannelSnapshot) -> Result
                 })
             })
             .collect();
-        store.replace_device_skill_records(&report.device_id, &rows)?;
-        summary.states += 1;
+        if store.apply_device_state_if_newer(
+            &report.device_id, report.reported_at, &snapshot.head_commit, &rows,
+        )? {
+            summary.states += 1;
+        }
     }
 
     for (inst, commit) in &snapshot.instructions {
@@ -1507,6 +1509,38 @@ mod tests {
         let snapshot = fetch_channel_snapshot(&url, "devices-test").unwrap();
         assert!(snapshot.states.is_empty());
         assert!(snapshot.warnings.iter().any(|warning| warning.contains("does not match")));
+    }
+
+    #[test]
+    fn device_state_older_or_equal_snapshot_cannot_replace_newer_inventory() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = SkillStore::new(&temp.path().join("state.db")).unwrap();
+        let report = |time, skill: &str| ChannelSnapshot {
+            head_commit: format!("commit-{time}"),
+            states: vec![DeviceStateReport {
+                schema: DEVICE_PROTOCOL_VERSION,
+                device_id: "device-a".into(),
+                reported_at: time,
+                executing: vec![],
+                agents: vec![AgentStateReport {
+                    key: "codex".into(),
+                    skills: vec![AgentSkillReport {
+                        name: skill.into(), content_hash: None, deployed_at: None,
+                    }],
+                }],
+            }],
+            ..Default::default()
+        };
+        import_snapshot(&store, &report(200, "new")).unwrap();
+        import_snapshot(&store, &report(100, "old")).unwrap();
+        import_snapshot(&store, &report(200, "same-time")).unwrap();
+        let row = store.get_device("device-a").unwrap().unwrap();
+        assert_eq!(row.last_seen_at, Some(200));
+        let skills = store.get_device_skill_records(Some("device-a")).unwrap();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].skill_name, "new");
+        import_snapshot(&store, &report(300, "newest")).unwrap();
+        assert_eq!(store.get_device_skill_records(Some("device-a")).unwrap()[0].skill_name, "newest");
     }
 
     fn instruction(id: &str) -> DeviceInstruction {
