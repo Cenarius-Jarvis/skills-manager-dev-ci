@@ -26,7 +26,7 @@ use super::git_fetcher;
 use super::device_identity::{self, DeviceIdentity};
 use super::device_pairing;
 use super::device_pairing::{
-    prepare_claimed_command, verify_and_claim_paired, PreparedDeviceCommand,
+    prepare_claimed_command_with, verify_and_claim_paired, PreparedDeviceCommand,
 };
 use super::devices;
 use super::installer;
@@ -2847,7 +2847,7 @@ mod tests {
             ).unwrap().unwrap();
         let rows = reopened.get_targets_for_skill(&skill.id).unwrap();
         let codex_row = rows.iter().find(|r| r.tool == "codex").expect("record still exists");
-        let codex_current = content_hash::hash_directory(device.agent_root.join("demo-skill")).unwrap();
+        let codex_current = content_hash::hash_directory(&device.agent_root.join("demo-skill")).unwrap();
         assert_ne!(
             codex_row.source_hash.as_deref(),
             Some(codex_current.as_str()),
