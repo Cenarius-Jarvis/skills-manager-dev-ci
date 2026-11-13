@@ -285,25 +285,24 @@ where
 pub fn list_unprepared_claims(conn: &Connection, now: i64) -> Result<Vec<(String, String)>> {
     #[cfg(test)]
     {
-        let diag = |sql: &str| -> String {
-            let mut stmt = conn.prepare(sql).unwrap_or_else(|e| format!("ERR {e}"));
-            let _ = &mut stmt;
-            let rows = stmt
-                .query_map([], |row| row.get::<_, usize>(0))
-                .map(|rows| {
-                    rows.map(|r| r.unwrap_or(0)).sum::<usize>()
-                })
-                .unwrap_or(usize::MAX);
-            format!("{}", rows)
+        let count = |sql: &str| -> i64 {
+            let mut stmt = conn.prepare(sql).unwrap_or_else(|e| {
+                eprintln!("claim list diag: prepare failed for {sql}: {e}");
+                return conn.prepare("SELECT COUNT(*) FROM verified_message_bindings_v1").unwrap_or_else(|e2| {
+                    eprintln!("claim list diag: fallback prepare failed too: {e2}");
+                    std::process::exit(201);
+                });
+            });
+            let n = stmt.query_row([], |row| row.get::<_, i64>(0)).unwrap_or(-1);
+            eprintln!("claim list diag: {sql} => {n}");
+            n
         };
         eprintln!(
-            "claim list diag: bindings_cmd={} bindings_cmd_unprepared_future={} inbox_cmd={} active_mgr_keys={}",
-            diag("SELECT COUNT(*) FROM verified_message_bindings_v1 WHERE purpose = 'command'"),
-            diag(&format!(
-                "SELECT COUNT(*) FROM verified_message_bindings_v1 WHERE purpose = 'command' AND prepared = 0 AND expires_at > {now}"
-            )),
-            diag("SELECT COUNT(*) FROM verified_message_inbox_v1"),
-            diag("SELECT COUNT(*) FROM device_trusted_keys_v1 WHERE purpose = 'command' AND active = 1"),
+            "claim list diag: bindings_cmd={} bindings_cmd_unprepared_future={} inbox={} active_mgr_keys={}",
+            count("SELECT COUNT(*) FROM verified_message_bindings_v1 WHERE purpose = 'command'"),
+            count(&format!("SELECT COUNT(*) FROM verified_message_bindings_v1 WHERE purpose = 'command' AND prepared = 0 AND expires_at > {now}")),
+            count("SELECT COUNT(*) FROM verified_message_inbox_v1"),
+            count("SELECT COUNT(*) FROM device_trusted_keys_v1 WHERE purpose = 'command' AND active = 1"),
         );
     }
     let mut stmt = conn.prepare(
