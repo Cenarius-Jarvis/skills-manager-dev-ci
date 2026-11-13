@@ -2743,6 +2743,15 @@ mod tests {
     /// production update path and exits abruptly at the requested crash
     /// point. The parent then reopens the database and drives recovery.
     /// These are true process restarts, not ordinary error returns.
+    /// Flush the WAL into the main database file so a REAL child process
+    /// (a fresh OS process, not a thread of this one) sees everything the
+    /// parent wrote through its own connection.
+    fn checkpoint_for_child(store: &SkillStore) {
+        store.with_conn(|conn| {
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+        }).unwrap();
+    }
+
     fn spawn_crash_child(point: &str, agent: &str, base: &Path, channel_url: &str) -> std::process::ExitStatus {
         let exe = std::env::current_exe().unwrap();
         let mut cmd = std::process::Command::new(&exe);
@@ -2885,6 +2894,7 @@ mod tests {
 
         // REAL child process: runs the production update and exits for real
         // right after codex's files were replaced, before its record swap.
+        checkpoint_for_child(&device.store);
         let status = spawn_crash_child("after-target-sync", "codex", &device.base, &channel_url);
         assert_eq!(status.code(), Some(42), "the child must die at the injection point");
 
@@ -2993,6 +3003,7 @@ mod tests {
         git(&skill_src, &["push", served_repo.to_string_lossy().as_ref(), "main"]);
         let update = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
         publish_command(&manager, &channel_url, &update);
+        checkpoint_for_child(&device.store);
         let status = spawn_crash_child("after-library-rename", "", &device.base, &channel_url);
         assert_eq!(status.code(), Some(42));
 
