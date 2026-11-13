@@ -68,6 +68,8 @@ jobs:
         run: |
           set -o pipefail
           cargo test --locked --manifest-path src-tauri/Cargo.toml --lib native_deploy -- --test-threads=1 2>&1 | tee nativedeploy_test.log
+      - name: Verify test build bridge isolation
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib --features test-build test_build_bridge_is_isolated_from_production_home -- --test-threads=1
       - name: Verify unsigned live execution remains disabled
         shell: bash
         run: |
