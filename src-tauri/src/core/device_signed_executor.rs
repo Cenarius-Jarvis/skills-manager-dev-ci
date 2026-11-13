@@ -2740,9 +2740,10 @@ mod tests {
     fn spawn_crash_child(point: &str, agent: &str, base: &Path) -> std::process::ExitStatus {
         let exe = std::env::current_exe().unwrap();
         let mut cmd = std::process::Command::new(exe);
+        // The test binary addresses tests by their full module path.
         cmd.args([
             "--exact",
-            "device_signed_executor::tests::crash_child_worker",
+            concat!(module_path!(), "::crash_child_worker"),
             "--nocapture",
         ])
         .env("SM_CRASH_ROLE", "child")
