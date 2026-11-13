@@ -2752,6 +2752,29 @@ mod tests {
             .unwrap();
     }
 
+    #[cfg(test)]
+    fn print_db_state(base: &Path, label: &str) {
+        let db = base.join("device.db");
+        let conn = rusqlite::Connection::open(&db).unwrap_or_else(|e| {
+            eprintln!("{label}: failed to open {}: {e}", db.display());
+            std::process::exit(200);
+        });
+        let pairs: Vec<(String, String)> = conn
+            .prepare("SELECT device_id, key_id FROM device_trusted_keys_v1")
+            .map(|mut s| {
+                s.query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                .unwrap_or_default()
+            })
+            .unwrap_or_else(|e| {
+                eprintln!("{label}: trust query failed: {e}");
+                vec![]
+            });
+        eprintln!("{label}: db={:?} trust_pairs={pairs:?}", db.display());
+    }
+
     fn spawn_crash_child(point: &str, agent: &str, base: &Path, channel_url: &str) -> std::process::ExitStatus {
         let exe = std::env::current_exe().unwrap();
         let mut cmd = std::process::Command::new(&exe);
@@ -2793,6 +2816,20 @@ mod tests {
     fn child_setup(base: &Path) -> (SkillStore, SignedExecutorConfig) {
         central_repo::set_test_base_dir_override(Some(base.to_path_buf()));
         let store = SkillStore::new(&base.join("device.db")).unwrap();
+        #[cfg(test)]
+        {
+            let pairs: Vec<(String, String)> = store.with_conn(|conn| {
+                let mut stmt = conn
+                    .prepare("SELECT device_id, key_id FROM device_trusted_keys_v1")
+                    .unwrap();
+                stmt.query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map(|rows| rows.collect::<std::result::Result<Vec<_>, _>>().unwrap())
+            })
+            .unwrap();
+            eprintln!("crash child db state: trust_pairs={pairs:?}");
+        }
         let url = std::env::var("SM_CHILD_CHANNEL").expect("SM_CHILD_CHANNEL must be set");
         let config = SignedExecutorConfig::new(url, BRANCH.to_string(), TARGET_DEVICE.to_string());
         (store, config)
@@ -2895,6 +2932,7 @@ mod tests {
         // REAL child process: runs the production update and exits for real
         // right after codex's files were replaced, before its record swap.
         checkpoint_for_child(&device.store);
+        print_db_state(&device.base, "parent-before-spawn-record-update");
         let status = spawn_crash_child("after-target-sync", "codex", &device.base, &channel_url);
         assert_eq!(status.code(), Some(42), "the child must die at the injection point");
 
@@ -3004,6 +3042,7 @@ mod tests {
         let update = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
         publish_command(&manager, &channel_url, &update);
         checkpoint_for_child(&device.store);
+        print_db_state(&device.base, "parent-before-spawn-library-swap");
         let status = spawn_crash_child("after-library-rename", "", &device.base, &channel_url);
         assert_eq!(status.code(), Some(42));
 
