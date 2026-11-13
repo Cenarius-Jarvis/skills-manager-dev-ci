@@ -2743,7 +2743,7 @@ mod tests {
     /// production update path and exits abruptly at the requested crash
     /// point. The parent then reopens the database and drives recovery.
     /// These are true process restarts, not ordinary error returns.
-    fn spawn_crash_child(point: &str, agent: &str, base: &Path) -> std::process::ExitStatus {
+    fn spawn_crash_child(point: &str, agent: &str, base: &Path, channel_url: &str) -> std::process::ExitStatus {
         let exe = std::env::current_exe().unwrap();
         let mut cmd = std::process::Command::new(&exe);
         // The test binary addresses tests by their full module path.
@@ -2757,7 +2757,8 @@ mod tests {
         .env("SM_CRASH_ROLE", "child")
         .env("SM_CRASH_POINT", point)
         .env("SM_CRASH_AGENT", agent)
-        .env("SM_TEST_BASE", base.to_string_lossy().as_ref());
+        .env("SM_TEST_BASE", base.to_string_lossy().as_ref())
+        .env("SM_CHILD_CHANNEL", channel_url);
         // Diagnostic: list the test names the CHILD binary can see, so a
         // filter mismatch is visible in the parent's log.
         let probe = std::process::Command::new(&exe)
@@ -2862,7 +2863,7 @@ mod tests {
 
         // REAL child process: runs the production update and exits for real
         // right after codex's files were replaced, before its record swap.
-        let status = spawn_crash_child("after-target-sync", "codex", &device.base);
+        let status = spawn_crash_child("after-target-sync", "codex", &device.base, &channel_url);
         assert_eq!(status.code(), Some(42), "the child must die at the injection point");
 
         // Reopen the store fresh (a real restart) and observe the split.
@@ -2970,7 +2971,7 @@ mod tests {
         git(&skill_src, &["push", served_repo.to_string_lossy().as_ref(), "main"]);
         let update = deploy_payload(&manager, &skill_url, "codex", "demo-skill");
         publish_command(&manager, &channel_url, &update);
-        let status = spawn_crash_child("after-library-rename", "", &device.base);
+        let status = spawn_crash_child("after-library-rename", "", &device.base, &channel_url);
         assert_eq!(status.code(), Some(42));
 
         // Reopen: the library directory is gone; the old version lives only
