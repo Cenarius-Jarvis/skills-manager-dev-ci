@@ -1300,7 +1300,13 @@ pub fn run_signed_once(store: &SkillStore, config: &SignedExecutorConfig) -> Res
     let unpaired_claims: Vec<(String, String)> = store.with_conn(|conn| {
         device_pairing::list_unprepared_claims(conn, now)
     })?;
+    #[cfg(test)]
+    eprintln!("recovery diag: unprepared claims = {unpaired_claims:?}");
     for (manager_device, claim_id) in unpaired_claims {
+        #[cfg(test)]
+        eprintln!(
+            "recovery diag: resuming claim {claim_id} from manager {manager_device} at now={now}"
+        );
         let claimed = match store.with_conn_mut(|conn| {
             device_pairing::resume_unprepared_claim(
                 conn, &manager_device, &claim_id, MessageKind::Command, now,
