@@ -2141,13 +2141,16 @@ mod tests {
         }).unwrap();
 
         let remove = undeploy_payload(&manager, "codex", "demo-skill");
-        publish_command(&manager, &channel_url, &remove);
+        let remove_id = publish_command(&manager, &channel_url, &remove);
         let report2 = run_signed_once(&device.store, &config).unwrap();
         assert_eq!(report2.rejected, 1, "{report2:#?}");
         assert!(deployed.exists(), "an unverifiable directory must survive");
         let receipts = signed_channel::fetch_signed_receipts(&channel_url, BRANCH, TARGET_DEVICE).unwrap();
         assert_eq!(receipts.len(), 2, "deploy success + undeploy rejection");
-        let receipt = verify_receipt(&receipts[1], &device.pubkey);
+        let receipt = receipts.iter()
+            .map(|message| verify_receipt(message, &device.pubkey))
+            .find(|receipt| receipt.instruction_id == remove_id)
+            .expect("receipt for the undeploy command");
         assert_eq!(receipt.status, RECEIPT_STATUS_REJECTED);
         assert!(receipt.reason.as_deref().unwrap_or("").contains("no recorded content hash"));
         let _ = device._dir;
@@ -3058,7 +3061,7 @@ mod tests {
         assert_eq!(status.code(), Some(42), "the child must die at the injection point");
 
         // Reopen the store fresh (a real restart) and observe the split.
-        let reopened = SkillStore::new(&device.base.join("device.db")).unwrap();
+        let reopened = SkillStore::new(&device._dir.path().join("device.db")).unwrap();
         let codex_target = device.agent_root.join("demo-skill").join("SKILL.md");
         assert_eq!(
             std::fs::read_to_string(&codex_target).unwrap(),
@@ -3171,7 +3174,7 @@ mod tests {
         // in a backup directory.
         let library = device.base.join("skills").join("demo-skill");
         assert!(!library.exists(), "the swap window leaves the library path empty");
-        let reopened = SkillStore::new(&device.base.join("device.db")).unwrap();
+        let reopened = SkillStore::new(&device._dir.path().join("device.db")).unwrap();
 
         // The retry restores the old version from the backup (hash-proven)
         // and completes the whole update.
