@@ -2751,6 +2751,23 @@ mod tests {
         .env("SM_CRASH_POINT", point)
         .env("SM_CRASH_AGENT", agent)
         .env("SM_TEST_BASE", base.to_string_lossy().as_ref());
+        // Diagnostic: list the test names the CHILD binary can see, so a
+        // filter mismatch is visible in the parent's log.
+        let probe = std::process::Command::new(&exe)
+            .args(["--list"])
+            .env("SM_CRASH_ROLE", "child")
+            .output()
+            .expect("failed to run --list probe");
+        let listing = String::from_utf8_lossy(&probe.stdout).to_string();
+        let matching: Vec<&str> = listing
+            .lines()
+            .filter(|l| l.contains("crash_child_worker"))
+            .collect();
+        println!(
+            "crash child probe: {} matching lines; sample: {:?}",
+            matching.len(),
+            matching.get(0).copied().unwrap_or("(none)")
+        );
         cmd.status().expect("failed to spawn the crash child")
     }
 
