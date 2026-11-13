@@ -2748,9 +2748,7 @@ mod tests {
     /// parent wrote through its own connection.
     fn checkpoint_for_child(store: &SkillStore) {
         store
-            .with_conn(|conn| {
-                conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
-            })
+            .with_conn(|conn| Ok(conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")))
             .unwrap();
     }
 
