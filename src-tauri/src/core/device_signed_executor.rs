@@ -614,7 +614,7 @@ fn execute_deploy(
                 let sync_result = sync_engine::sync_skill(
                     &library_path,
                     &row_target,
-                    sync_engine::sync_mode_for_tool(&row.tool, None),
+                    sync_engine::sync_mode_for_tool(&row.tool, configured_mode.as_deref()),
                     policy,
                 );
                 let actual = match sync_result {
@@ -3081,6 +3081,11 @@ mod tests {
             "the record still describes the old content: the disk/record split is identifiable"
         );
 
+        assert!(std::fs::symlink_metadata(device.agent_root.join("demo-skill")).unwrap().file_type().is_dir(),
+            "copy mode must remain a real directory after refresh");
+        assert!(std::fs::symlink_metadata(agent_root2.join("demo-skill")).unwrap().file_type().is_dir(),
+            "the other copy must not become a link to the central library");
+
         // A user edit to the NOT-yet-refreshed agent (claude) after the
         // crash must block the retry, not be overwritten.
         let claude_copy = agent_root2.join("demo-skill").join("SKILL.md");
@@ -3199,10 +3204,12 @@ mod tests {
         let foreign_backup = device.base.join("skills").join(".demo-skill.backup.foreign");
         std::fs::create_dir_all(&foreign_backup).unwrap();
         std::fs::write(foreign_backup.join("SKILL.md"), "# foreign").unwrap();
-        publish_command(&manager, &channel_url, &retry);
+        let retry_id = publish_command(&manager, &channel_url, &retry);
         let report3 = run_signed_once(&reopened, &config).unwrap();
         assert_eq!(report3.failed, 1, "{report3:#?}");
-        assert!(report3.outcomes[0].detail.contains("manual attention required"));
+        let outcome = report3.outcomes.iter().find(|outcome| outcome.message_id == retry_id)
+            .expect("foreign backup retry outcome");
+        assert!(outcome.detail.contains("manual attention required"), "{outcome:#?}");
         assert!(foreign_backup.exists(), "the foreign backup is preserved");
         let _ = device._dir;
     }
