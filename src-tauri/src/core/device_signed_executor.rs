@@ -2800,21 +2800,24 @@ mod tests {
         let (store, config) = child_setup(&base);
         #[cfg(test)]
         {
-            let rows = store.with_conn(|conn| {
-                let mut stmt = conn
-                    .prepare("SELECT device_id, key_id, purpose, active FROM device_trusted_keys_v1")
-                    .unwrap();
-                stmt.query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, i64>(3)?,
-                    ))
+            let rows = store
+                .with_conn(|conn| {
+                    let mut stmt = conn
+                        .prepare("SELECT device_id, key_id, purpose, active FROM device_trusted_keys_v1")
+                        .unwrap();
+                    let rows = stmt
+                        .query_map([], |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, String>(2)?,
+                                row.get::<_, i64>(3)?,
+                            ))
+                        })
+                        .map(|rows| rows.collect::<Vec<_>>())?;
+                    Ok(rows)
                 })
-                .map(|rows| rows.collect::<std::result::Result<Vec<_>, _>>().unwrap())
-            })
-            .unwrap();
+                .unwrap();
             eprintln!("crash child trust rows = {rows:?}");
         }
         // One production cycle; the injection point inside it exits the
