@@ -2739,7 +2739,7 @@ mod tests {
     /// These are true process restarts, not ordinary error returns.
     fn spawn_crash_child(point: &str, agent: &str, base: &Path) -> std::process::ExitStatus {
         let exe = std::env::current_exe().unwrap();
-        let mut cmd = std::process::Command::new(exe);
+        let mut cmd = std::process::Command::new(&exe);
         // The test binary addresses tests by their full module path.
         cmd.args([
             "--exact",
