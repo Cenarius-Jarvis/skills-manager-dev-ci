@@ -2814,7 +2814,7 @@ mod tests {
     /// Shared child setup: reopen the device store from the passed base and
     /// build the executor config. The channel URL is passed through env.
     fn child_setup(base: &Path) -> (SkillStore, SignedExecutorConfig) {
-        central_repo::set_test_base_dir_override(Some(base.to_path_buf()));
+        central_repo::set_test_base_dir_override(Some(base.join("sm-base")));
         let store = SkillStore::new(&base.join("device.db")).unwrap();
         #[cfg(test)]
         {
@@ -2873,8 +2873,7 @@ mod tests {
         // the parent's log shows why, and die loudly.
         match report {
             Ok(report) => panic!(
-                "crash child finished WITHOUT hitting the injection: fetched={} executed={} skipped={} failed={} rejected={} published={}",
-                report.fetched, report.executed, report.skipped, report.failed, report.rejected, report.receipts_published
+                "crash child finished WITHOUT hitting the injection: {report:#?}"
             ),
             Err(err) => panic!("crash child run FAILED (the injection fired earlier?): {err:#}"),
         }
