@@ -2741,9 +2741,10 @@ mod tests {
         let exe = std::env::current_exe().unwrap();
         let mut cmd = std::process::Command::new(&exe);
         // The test binary addresses tests by their full module path.
+        // Substring filter: it matches exactly one test regardless of any
+        // harness path-prefix differences that break --exact.
         cmd.args([
-            "--exact",
-            concat!(module_path!(), "::crash_child_worker"),
+            "crash_child_worker",
             "--nocapture",
             "--test-threads=1",
         ])
