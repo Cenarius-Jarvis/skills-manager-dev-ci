@@ -260,6 +260,17 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    #[cfg(feature = "test-build")]
+    #[test]
+    fn test_build_bridge_is_isolated_from_production_home() {
+        let _lock = central_repo::test_base_dir_lock();
+        let tmp = tempdir().unwrap();
+        central_repo::set_test_home_dir_override(Some(tmp.path().to_path_buf()));
+        assert_eq!(bridge_dir(), tmp.path().join(".skills-manager-test").join("bin"));
+        assert_ne!(bridge_dir(), tmp.path().join(".skills-manager").join("bin"));
+        central_repo::set_test_home_dir_override(None);
+    }
+
     /// A fake "bundled CLI" that reports the version it is told to. The copy,
     /// verify, rename and stamp sequence is what this module owns; which real
     /// binary it copies is not.
