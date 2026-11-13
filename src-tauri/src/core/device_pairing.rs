@@ -283,6 +283,29 @@ where
 /// managers rather than one id. Returned as (manager device id, message id);
 /// expired claims are excluded (`list_command_recovery` surfaces them).
 pub fn list_unprepared_claims(conn: &Connection, now: i64) -> Result<Vec<(String, String)>> {
+    #[cfg(test)]
+    {
+        let diag = |sql: &str| -> String {
+            let mut stmt = conn.prepare(sql).unwrap_or_else(|e| format!("ERR {e}"));
+            let _ = &mut stmt;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, usize>(0))
+                .map(|rows| {
+                    rows.map(|r| r.unwrap_or(0)).sum::<usize>()
+                })
+                .unwrap_or(usize::MAX);
+            format!("{}", rows)
+        };
+        eprintln!(
+            "claim list diag: bindings_cmd={} bindings_cmd_unprepared_future={} inbox_cmd={} active_mgr_keys={}",
+            diag("SELECT COUNT(*) FROM verified_message_bindings_v1 WHERE purpose = 'command'"),
+            diag(&format!(
+                "SELECT COUNT(*) FROM verified_message_bindings_v1 WHERE purpose = 'command' AND prepared = 0 AND expires_at > {now}"
+            )),
+            diag("SELECT COUNT(*) FROM verified_message_inbox_v1"),
+            diag("SELECT COUNT(*) FROM device_trusted_keys_v1 WHERE purpose = 'command' AND active = 1"),
+        );
+    }
     let mut stmt = conn.prepare(
         "SELECT b.device_id, b.message_id FROM verified_message_bindings_v1 b
          JOIN verified_message_inbox_v1 i
