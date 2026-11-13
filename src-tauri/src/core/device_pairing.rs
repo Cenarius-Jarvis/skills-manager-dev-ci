@@ -318,8 +318,10 @@ pub fn list_unprepared_claims(conn: &Connection, now: i64) -> Result<Vec<(String
     let rows = stmt
         .query_map(params![now], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+        })
+        .context("failed to query unprepared claims")?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("failed to read unprepared claim rows")?;
     if rows.len() > 256 { bail!("unprepared claim list exceeds limit; pagination required"); }
     Ok(rows)
 }
