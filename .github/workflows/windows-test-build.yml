@@ -1,4 +1,4 @@
-name: Test builds label 9 (atomic prepare, per-target recovery, real push failure)
+name: Test builds label 10 (crash recovery and isolated bridge)
 # Deliberately narrow trigger, same scheme as two-device-simulation.yml:
 # only pushes to this branch that touch this workflow file build, so a
 # release is an explicit act — bump the build label below to cut a new
@@ -7,7 +7,7 @@ name: Test builds label 9 (atomic prepare, per-target recovery, real push failur
 # it never touches the production store or replaces the production install.
 on:
   push:
-    branches: [codex/device-identity-pairing]
+    branches: [codex/restore-crash-tests]
     paths: ['.github/workflows/windows-test-build.yml']
 permissions:
   contents: read
@@ -78,7 +78,7 @@ jobs:
             echo "::error::linux build errors: $LOG"
           fi
       - name: Build the Linux CLI binary
-        run: cargo build --locked --release --manifest-path src-tauri/Cargo.toml --bin skills-manager-cli
+        run: cargo build --locked --release --manifest-path src-tauri/Cargo.toml --features test-build --bin skills-manager-cli
       - name: Package the Linux CLI
         shell: bash
         run: |
@@ -97,7 +97,7 @@ jobs:
       - name: Upload Linux CLI
         uses: actions/upload-artifact@v4
         with:
-          name: skills-manager-cli-linux
+          name: skills-manager-test-cli-linux
           path: skills-manager-cli-linux.tar.gz
           if-no-files-found: error
           retention-days: 14
