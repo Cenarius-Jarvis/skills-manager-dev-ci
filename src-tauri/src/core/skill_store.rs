@@ -570,6 +570,30 @@ impl SkillStore {
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
+    /// Replace one deployment record atomically: the old row and the new
+    /// row swap in a single transaction, so a crash can never leave a
+    /// target with neither record (the "deleted but not re-inserted"
+    /// window). The caller still records per-target progress separately.
+    pub fn replace_skill_target(&self, row: &SkillTargetRecord) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM skill_targets WHERE skill_id = ?1 AND tool = ?2",
+            params![row.skill_id, row.tool],
+        )?;
+        tx.execute(
+            "INSERT INTO skill_targets
+                (id, skill_id, tool, target_path, mode, status, synced_at, last_error, source_hash)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                row.id, row.skill_id, row.tool, row.target_path, row.mode, row.status,
+                row.synced_at, row.last_error, row.source_hash
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn delete_target(&self, skill_id: &str, tool: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(

@@ -414,6 +414,44 @@ fn execute_deploy(
             let Some(recorded_hash) = skill.content_hash.clone() else {
                 bail!("library record for {name:?} has no content hash; refusing to update");
             };
+            if !library_path.exists() {
+                // A previous attempt crashed between renaming the library to
+                // its backup and moving the staged copy in. Restore the old
+                // version only when its content provably matches the
+                // recorded hash — never silently lose it.
+                let library_parent0 = library_path
+                    .parent()
+                    .context("library directory has no parent")?
+                    .to_path_buf();
+                let mut restored: Option<String> = None;
+                if let Ok(entries) = std::fs::read_dir(&library_parent0) {
+                    for entry in entries.flatten() {
+                        let file_name = entry.file_name().to_string_lossy().to_string();
+                        if !file_name.starts_with(&format!(".{name}.backup.")) {
+                            continue;
+                        }
+                        if !entry.path().is_dir() { continue; }
+                        let Ok(hash) = content_hash::hash_directory(&entry.path()) else { continue };
+                        if hash == recorded_hash {
+                            std::fs::rename(entry.path(), &library_path)
+                                .context("restoring the library backup failed")?;
+                            restored = Some(file_name);
+                            break;
+                        }
+                    }
+                }
+                match restored {
+                    Some(dir) => {
+                        log::warn!(
+                            "library copy of {name:?} was restored from interrupted-update backup {dir:?}"
+                        );
+                    }
+                    None => bail!(
+                        "library copy of {name:?} is missing and no backup matches the recorded content; \
+                         manual attention required — the old version is preserved under a .{name}.backup.* directory"
+                    ),
+                }
+            }
             let central = std::fs::canonicalize(&library_path)
                 .context("library copy is unavailable")?;
             let current_library_hash = content_hash::hash_directory(&central)?;
@@ -497,6 +535,11 @@ fn execute_deploy(
             let _ = std::fs::remove_dir_all(&backup);
             std::fs::rename(&library_path, &backup)
                 .context("swapping the library copy failed")?;
+            // Crash window: the old copy lives only in the backup. The next
+            // attempt recovers it through the hash-proven library-missing
+            // branch above.
+            #[cfg(test)]
+            maybe_inject_crash("after-library-rename", "");
             record.phase = UPDATE_PHASE_SWAPPED.to_string();
             record.updated_at = chrono::Utc::now().timestamp();
             record_update_operation(store, &record)?;
@@ -610,9 +653,14 @@ fn execute_deploy(
                 }
                 let row_tool = row.tool.clone();
                 let row_path = row.target_path.clone();
+                // The files now carry the new content; the record swap is
+                // the last step for this target. Crash window: files new,
+                // record old — the pre-check repair reconciles exactly this
+                // state on the next attempt.
+                #[cfg(test)]
+                maybe_inject_crash("after-target-sync", &row.tool);
                 let record_result = (|| -> Result<()> {
-                    store.delete_target(&skill.id, &row_tool)?;
-                    store.insert_target(&SkillTargetRecord {
+                    store.replace_skill_target(&SkillTargetRecord {
                         id: uuid::Uuid::new_v4().to_string(),
                         skill_id: skill.id.clone(),
                         tool: row_tool,
@@ -623,6 +671,9 @@ fn execute_deploy(
                         last_error: None,
                         source_hash: Some(staged_hash.clone()),
                     })?;
+                    // Atomic swap committed: files and record agree.
+                    #[cfg(test)]
+                    maybe_inject_crash("after-target-record", &row.tool);
                     Ok(())
                 })();
                 if let Err(err) = record_result {
@@ -828,6 +879,19 @@ pub const TARGET_PHASE_PENDING: &str = "pending";
 pub const TARGET_PHASE_REFRESHED: &str = "refreshed";
 pub const TARGET_PHASE_FAILED: &str = "failed";
 
+/// Test-only crash injection: a REAL process exit at an exact point of the
+/// update flow, so recovery tests exercise true abrupt termination (the
+/// test binary re-spawns itself as the child and exits mid-operation).
+#[cfg(test)]
+fn maybe_inject_crash(point: &str, agent_key: &str) {
+    let Ok(want_point) = std::env::var("SM_CRASH_POINT") else { return };
+    if want_point != point { return; }
+    if let Ok(want_agent) = std::env::var("SM_CRASH_AGENT") {
+        if !want_agent.is_empty() && want_agent != agent_key { return; }
+    }
+    std::process::exit(42);
+}
+
 pub fn initialize_receipt_outbox(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(&format!(
         "CREATE TABLE IF NOT EXISTS {RECEIPT_OUTBOX_TABLE} (
@@ -947,12 +1011,28 @@ fn repair_target_record_if_interrupted_write(
             )
             .optional()?;
         let Some(operation_id) = matched else { return Ok(false) };
-        conn.execute(
+        let updated = conn.execute(
             "UPDATE skill_targets SET source_hash = ?1, status = 'ok', last_error = NULL,
                     synced_at = ?2
              WHERE skill_id = ?3 AND tool = ?4",
             rusqlite::params![current_hash, chrono::Utc::now().timestamp_millis(), skill_id, agent_key],
         )?;
+        if updated == 0 {
+            // The record swap itself was interrupted before its transaction
+            // committed and the row is gone; the content on disk provably
+            // matches the pinned staged content, so the record is recreated.
+            conn.execute(
+                "INSERT INTO skill_targets
+                    (id, skill_id, tool, target_path, mode, status, synced_at, last_error, source_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'ok', ?6, NULL, ?7)",
+                rusqlite::params![
+                    uuid::Uuid::new_v4().to_string(), skill_id, agent_key,
+                    target_path.to_string_lossy(),
+                    crate::core::sync_engine::sync_mode_for_tool(agent_key, None).as_str(),
+                    chrono::Utc::now().timestamp_millis(), current_hash
+                ],
+            )?;
+        }
         conn.execute(
             "UPDATE update_targets_v1 SET phase = 'refreshed', updated_at = ?1
              WHERE operation_id = ?2 AND agent_key = ?3",
