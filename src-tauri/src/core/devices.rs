@@ -2342,11 +2342,12 @@ mod tests {
         assert!(!String::from_utf8(old_json).unwrap().contains("library"));
         let snapshot = fetch_channel_snapshot(&url, "test-channel").unwrap();
         let store = SkillStore::new(&temp.path().join("projected.db")).unwrap();
-        import_snapshot(&store, &snapshot).unwrap();
+        let imported = import_snapshot(&store, &snapshot).unwrap();
         let remote_lib = library_view(&store, "dev-remote").unwrap();
         assert_eq!(remote_lib.skills.len(), 2);
         assert!(remote_lib.skills.iter().any(|s| s.name == "not-deployed"));
-        assert_eq!(store.get_device_skill_records(Some("dev-remote")).unwrap().len(), 1);
+        assert!(store.get_device_skill_records(Some("dev-remote")).unwrap().is_empty());
+        assert!(imported.warnings.iter().any(|warning| warning.contains("unsigned device state ignored")));
         assert_eq!(library_view(&store, "dev-main").unwrap().skills[0].name, "local-only");
 
         let (_tmp, work) = prepare_working_copy(&url, "test-channel").unwrap();
