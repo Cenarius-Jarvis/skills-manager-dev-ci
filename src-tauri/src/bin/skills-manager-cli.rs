@@ -742,6 +742,34 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         print_json(&report, cli.json);
         return Ok(());
     }
+    // Do not run normal CLI initialization here: that path may migrate or
+    // reindex the skill library. A report uses the already initialized local
+    // identity and only reads explicitly selected agent directories.
+    if let Commands::Devices(DevicesArgs {
+        command: DevicesCommand::ReportState { url, branch, agents, allowed_roots }
+    }) = &cli.command {
+        if cli.skills_root.is_some() {
+            bail!("devices report-state cannot be combined with --skills-root");
+        }
+        let branch = branch.as_deref().unwrap_or(devices::DEFAULT_CHANNEL_BRANCH);
+        devices::validate_branch_name(branch)?;
+        let mappings = parse_executor_agents(agents)?;
+        let store = SkillStore::open_existing_no_migrate(&central_repo::db_path())?;
+        let device_id = store.get_setting(devices::SETTING_DEVICE_LOCAL_ID)?
+            .filter(|id| !id.trim().is_empty())
+            .ok_or_else(|| anyhow!("local device identity is not initialized; open the device page first"))?;
+        let report = device_executor::build_state_report(
+            &device_id, &mappings, allowed_roots, chrono::Utc::now().timestamp(),
+        )?;
+        let commit = devices::publish_signed_state_report(&store, url, branch, &report)?;
+        print_json(&serde_json::json!({
+            "device_id": device_id,
+            "reported_at": report.reported_at,
+            "agents": report.agents.len(),
+            "channel_commit": commit,
+        }), cli.json);
+        return Ok(());
+    }
     // A preview cannot open the regular store: initialization may create or
     // migrate files, and an implicit identity could be persisted. Require an
     // explicit id and enter the read-only executor path before opening it.
@@ -861,6 +889,22 @@ enum DevicesCommand {
         #[arg(long)]
         device_id: String,
     },
+    /// Scan explicit agent directories and publish a signed state snapshot.
+    /// This does not execute channel commands or modify agent directories.
+    ReportState {
+        /// Explicitly selected private device channel remote.
+        #[arg(long)]
+        url: String,
+        /// Control channel branch.
+        #[arg(long)]
+        branch: Option<String>,
+        /// Agent inventory mapping, repeatable: --agent key=absolute-directory.
+        #[arg(long = "agent", required = true)]
+        agents: Vec<String>,
+        /// Explicit roots within which symlink targets may be scanned.
+        #[arg(long = "allowed-root")]
+        allowed_roots: Vec<PathBuf>,
+    },
     /// Print this machine's device identity (id, name and channel settings).
     Whoami,
     /// One-shot device executor: pull instructions from the control channel,
@@ -966,6 +1010,7 @@ fn run_devices(args: DevicesArgs, store: &SkillStore, json: bool) -> anyhow::Res
         }
         DevicesCommand::Inventory { .. } => unreachable!("handled before the store is opened"),
         DevicesCommand::ReportLibrary { .. } => unreachable!("handled before the store is opened"),
+        DevicesCommand::ReportState { .. } => unreachable!("handled before normal store initialization"),
         DevicesCommand::Whoami => {
             let report = DevicesWhoami {
                 device_id: devices::local_device_id(store)?,
@@ -3594,6 +3639,38 @@ mod tests {
     use app_lib::core::tool_adapters::{CustomToolDef, ToolCategory};
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn signed_state_cli_requires_explicit_agents() {
+        assert!(Cli::try_parse_from([
+            "skills-manager-cli", "devices", "report-state", "--url", "fixture.git",
+        ]).is_err());
+        let parsed = Cli::try_parse_from([
+            "skills-manager-cli", "devices", "report-state", "--url", "fixture.git",
+            "--agent", "codex=/tmp/agent", "--allowed-root", "/tmp/library",
+        ]).unwrap();
+        match parsed.command {
+            Commands::Devices(DevicesArgs { command: DevicesCommand::ReportState { agents, allowed_roots, .. } }) => {
+                assert_eq!(agents, vec!["codex=/tmp/agent"]);
+                assert_eq!(allowed_roots, vec![PathBuf::from("/tmp/library")]);
+            }
+            other => panic!("unexpected command {other:?}"),
+        }
+    }
+
+    #[test]
+    fn signed_state_cli_rejects_external_root_before_store_initialization() {
+        let temp = tempdir().unwrap();
+        let external = temp.path().join("absent-external-skills");
+        let external_arg = external.to_string_lossy().to_string();
+        let cli = Cli::try_parse_from([
+            "skills-manager-cli", "--skills-root", &external_arg, "devices", "report-state",
+            "--url", "fixture.git", "--agent", "codex=/fixture",
+        ]).unwrap();
+        let err = run(cli).unwrap_err();
+        assert!(err.to_string().contains("report-state cannot be combined with --skills-root"));
+        assert!(!external.exists());
+    }
 
     #[test]
     fn inventory_run_once_cli_accepts_repeated_explicit_roots() {

@@ -222,6 +222,24 @@ pub fn ensure_identity(store: &SkillStore) -> Result<DeviceIdentity> {
     }
 }
 
+/// Read a previously provisioned identity without generating a replacement.
+/// Reporting must not silently rotate a paired key when key storage is lost.
+pub fn load_existing_identity(store: &SkillStore) -> Result<DeviceIdentity> {
+    let device_id = store.get_setting(super::devices::SETTING_DEVICE_LOCAL_ID)?
+        .filter(|id| !id.trim().is_empty())
+        .context("device identity is not initialized; open the device page first")?;
+    let payload = stored_identity_payload(&device_id)?
+        .context("device signing key is unavailable; inspect the existing pairing")?;
+    let stored: StoredIdentity = serde_json::from_str(&payload)?;
+    if stored.version != 1 || (!stored.device_id.is_empty() && stored.device_id != device_id) {
+        bail!("stored device identity does not match this device");
+    }
+    let pkcs8 = hex::decode(&stored.pkcs8_hex).context("stored identity key is invalid")?;
+    let identity = identity_from_pkcs8(&device_id, &pkcs8)?;
+    if identity.key_id != stored.key_id { bail!("stored device identity key id does not match"); }
+    Ok(identity)
+}
+
 fn identity_from_pkcs8(device_id: &str, pkcs8: &[u8]) -> Result<DeviceIdentity> {
     let keypair = Ed25519KeyPair::from_pkcs8(pkcs8)
         .map_err(|_| anyhow::anyhow!("stored device identity key material is invalid"))?;
@@ -456,6 +474,16 @@ pub fn approve_pairing_manifest(store: &SkillStore, json: &str) -> Result<Pairin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signed_state_reporting_does_not_create_missing_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SkillStore::new(&dir.path().join("test.db")).unwrap();
+        let device_id = format!("dev-missing-{}", uuid::Uuid::new_v4().simple());
+        store.set_setting(super::super::devices::SETTING_DEVICE_LOCAL_ID, &device_id).unwrap();
+        assert!(load_existing_identity(&store).is_err());
+        assert!(stored_identity_payload(&device_id).unwrap().is_none());
+    }
 
     fn test_store() -> (tempfile::TempDir, SkillStore) {
         let dir = tempfile::tempdir().unwrap();

@@ -100,17 +100,19 @@ fn build_page(store: &SkillStore) -> Result<DevicesPage, AppError> {
     let threshold = devices::online_threshold_secs(store);
     let mut devices_out = Vec::new();
     for row in store.get_devices().map_err(|e| AppError::db(e))? {
-        let online = devices::is_device_online(row.last_seen_at, threshold, now);
-        let skill_records = store
-            .get_device_skill_records(Some(&row.id))
-            .map_err(|e| AppError::db(e))?;
+        let trusted = store.has_trusted_device_state(&row.id).map_err(|e| AppError::db(e))?;
+        let last_seen_at = if trusted { row.last_seen_at } else { None };
+        let online = devices::is_device_online(last_seen_at, threshold, now);
+        let skill_records = if trusted {
+            store.get_device_skill_records(Some(&row.id)).map_err(|e| AppError::db(e))?
+        } else { Vec::new() };
         let library = devices::library_view(store, &row.id).map_err(|e| AppError::db(e))?;
         devices_out.push(DeviceWithStatus {
             id: row.id,
             name: row.name,
             platform: row.platform,
             created_at: row.created_at,
-            last_seen_at: row.last_seen_at,
+            last_seen_at,
             online,
             skill_records,
             library,
@@ -739,5 +741,25 @@ mod snapshot_warning_tests {
 
         let clean = page_from_snapshot(&store, &ChannelSnapshot::default()).unwrap();
         assert_eq!(clean.snapshot_warnings, Some(Vec::new()));
+    }
+
+    #[test]
+    fn device_page_hides_legacy_unverified_presence_and_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SkillStore::new(&dir.path().join("test.db")).unwrap();
+        let now = chrono::Utc::now().timestamp();
+        store.upsert_device(&devices::DeviceRow {
+            id: "legacy-device".into(), name: "legacy".into(), platform: None,
+            created_at: now, last_seen_at: Some(now), last_state_commit: Some("old".into()),
+        }).unwrap();
+        store.replace_device_skill_records("legacy-device", &[devices::DeviceSkillRecordRow {
+            device_id: "legacy-device".into(), agent_key: "codex".into(), skill_name: "unverified".into(),
+            content_hash: None, deployed_at: None, reported_commit: None,
+        }]).unwrap();
+        let page = get_page_internal(&store).unwrap();
+        assert_eq!(page.devices.len(), 1);
+        assert!(!page.devices[0].online);
+        assert!(page.devices[0].last_seen_at.is_none());
+        assert!(page.devices[0].skill_records.is_empty());
     }
 }

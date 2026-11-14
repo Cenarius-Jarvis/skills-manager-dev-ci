@@ -115,6 +115,20 @@ pub struct ScenarioSkillToolToggleRecord {
 }
 
 impl SkillStore {
+    /// Open an already initialized store without schema migration, creation,
+    /// or library reindexing. Used for explicitly requested status reporting.
+    pub fn open_existing_no_migrate(db_path: &PathBuf) -> Result<Self> {
+        let key_path = db_path.parent().context("database has no parent")?.join(".secret.key");
+        if !db_path.is_file() || !key_path.is_file() {
+            anyhow::bail!("existing database or encryption key is unavailable");
+        }
+        let conn = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+        let secret_key = crypto::load_or_create_key(&key_path)?;
+        Ok(Self { conn: Mutex::new(conn), secret_key })
+    }
+
     pub fn new(db_path: &PathBuf) -> Result<Self> {
         let conn = Connection::open(db_path)?;
         // busy_timeout makes concurrent CLI + GUI writers wait briefly instead
@@ -1542,6 +1556,23 @@ impl SkillStore {
             )
             .optional()?;
         Ok(row)
+    }
+
+    /// Previously cached unsigned state must never be displayed as paired,
+    /// verified device state. A revoked signing key also invalidates it.
+    pub fn has_trusted_device_state(&self, device_id: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'signed_state_watermarks_v1')",
+            [], |row| row.get(0),
+        )?;
+        if !exists { return Ok(false); }
+        Ok(conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM signed_state_watermarks_v1 w
+             JOIN device_trusted_keys_v1 k ON k.device_id = w.device_id AND k.key_id = w.key_id
+             WHERE w.device_id = ?1 AND k.purpose = 'library_report' AND k.active = 1)",
+            params![device_id], |row| row.get(0),
+        )?)
     }
 
     pub fn get_devices(&self) -> Result<Vec<DeviceRow>> {

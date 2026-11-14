@@ -30,3 +30,11 @@ jobs:
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib device_state_older_or_equal_snapshot_cannot_replace_newer_inventory
       - name: Test device channel regression suite
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib core::devices::tests -- --test-threads=1
+      - name: Test signed state inventory and guards
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib signed_state -- --test-threads=1
+      - name: Test report-state CLI guards
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --bin skills-manager-cli signed_state_cli -- --test-threads=1
+      - name: Test legacy executor fixture regression
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib device_executor -- --test-threads=1
+      - name: Test device page projection
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib device_page_ -- --test-threads=1

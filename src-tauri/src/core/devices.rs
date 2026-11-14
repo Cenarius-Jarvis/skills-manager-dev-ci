@@ -23,6 +23,13 @@ use super::git_command::git_command;
 use super::git_credentials::credential_env_for_url;
 use super::skill_store::SkillStore;
 
+fn is_channel_reparse_point(meta: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    { use std::os::windows::fs::MetadataExt; meta.file_attributes() & 0x400 != 0 }
+    #[cfg(not(windows))]
+    { let _ = meta; false }
+}
+
 pub const DEVICE_PROTOCOL_VERSION: u32 = 1;
 
 // ── Settings keys ──
@@ -905,6 +912,42 @@ pub fn publish_state_report(url: &str, branch: &str, report: &DeviceStateReport)
     commit_and_push(&dir, url, branch, "Skills Manager", "devices: report state")
 }
 
+/// A separately tagged signed payload cannot be confused with a library
+/// report even though the same pairing purpose is used for read-only reports.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SignedStatePayload {
+    kind: String,
+    report: DeviceStateReport,
+}
+
+/// Publish a complete explicitly selected agent inventory. This function
+/// never processes instructions and does not authorize deployment.
+pub fn publish_signed_state_report(
+    store: &SkillStore, url: &str, branch: &str, report: &DeviceStateReport,
+) -> Result<String> {
+    use super::device_envelope::MessageKind;
+    validate_state_report(report)?;
+    validate_branch_name(branch)?;
+    let identity = super::device_identity::load_existing_identity(store)?;
+    if report.device_id != identity.device_id { bail!("state report identity mismatch"); }
+    let payload = serde_json::to_string(&SignedStatePayload {
+        kind: "agent-state-v1".into(), report: report.clone(),
+    })?;
+    let signed = identity.sign_message(MessageKind::LibraryReport, payload.as_bytes().to_vec(), report.reported_at, 900)?;
+    let wire = super::signed_channel::SignedChannelMessage {
+        envelope: signed.envelope, signature: hex::encode(signed.signature), payload_json: payload,
+    };
+    let bytes = super::signed_channel::encode_channel_file(&wire)?;
+    if bytes.len() > 1024 * 1024 { bail!("state report exceeds size limit"); }
+    let (_tmp, dir) = prepare_working_copy(url, branch)?;
+    ensure_protocol_file(&dir)?;
+    let base = dir.join(device_dir_name(&report.device_id)?);
+    std::fs::create_dir_all(&base)?;
+    std::fs::write(base.join("state-signed-v1.json"), bytes)?;
+    commit_and_push(&dir, url, branch, "Skills Manager", "devices: report signed state")
+}
+
 /// Separate, optional library protocol. Legacy clients ignore this sidecar.
 pub const LIBRARY_REPORT_VERSION: u32 = 1;
 const LIBRARY_MAX_BYTES: u64 = 1_048_576;
@@ -1092,6 +1135,7 @@ pub struct ChannelSnapshot {
     pub head_commit: String,
     pub manifests: Vec<DeviceManifest>,
     pub states: Vec<DeviceStateReport>,
+    pub signed_states: Vec<(String, super::signed_channel::SignedChannelMessage)>,
     pub libraries: Vec<(String, LibraryObservation)>,
     pub instructions: Vec<(DeviceInstruction, String)>,
     pub receipts: Vec<(DeviceReceipt, String)>,
@@ -1205,6 +1249,23 @@ pub fn fetch_channel_snapshot(url: &str, branch: &str) -> Result<ChannelSnapshot
             snapshot.warnings.push(format!("devices/{device_id}/library-v1.json: unavailable or incomplete"));
         }
         snapshot.libraries.push((device_id.clone(), library));
+
+        let signed_path = device_dir.join("state-signed-v1.json");
+        match std::fs::symlink_metadata(&signed_path) {
+            Ok(meta) if meta.file_type().is_file() && !meta.file_type().is_symlink()
+                && !is_channel_reparse_point(&meta) && meta.len() <= 1024 * 1024 => {
+                match std::fs::read(&signed_path).and_then(|data| {
+                    super::signed_channel::decode_channel_file(&data, super::device_envelope::MessageKind::LibraryReport)
+                        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err.to_string()))
+                }) {
+                    Ok(message) => snapshot.signed_states.push((device_id.clone(), message)),
+                    Err(_) => snapshot.warnings.push(format!("devices/{device_id}: invalid signed state")),
+                }
+            }
+            Ok(_) => snapshot.warnings.push(format!("devices/{device_id}: invalid signed state file")),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {},
+            Err(_) => snapshot.warnings.push(format!("devices/{device_id}: signed state unavailable")),
+        }
 
         if let Some(manifest) =
             parse_json_file::<DeviceManifest>(&device_dir.join("device.json"), &mut snapshot.warnings)
@@ -1325,6 +1386,7 @@ pub fn import_snapshot(store: &SkillStore, snapshot: &ChannelSnapshot) -> Result
     // (FK) can attach even before the device's own manifest arrives.
     let mut referenced: Vec<String> = manifests_by_id.keys().cloned().collect();
     referenced.extend(states_by_id.keys().cloned());
+    referenced.extend(snapshot.signed_states.iter().map(|(id, _)| id.clone()));
     referenced.extend(snapshot.libraries.iter().map(|(id, _)| id.clone()));
     referenced.extend(snapshot.instructions.iter().map(|(i, _)| i.device_id.clone()));
     referenced.extend(snapshot.receipts.iter().map(|(r, _)| r.device_id.clone()));
@@ -1359,25 +1421,63 @@ pub fn import_snapshot(store: &SkillStore, snapshot: &ChannelSnapshot) -> Result
         }
     }
 
-    for report in &snapshot.states {
-        let rows: Vec<DeviceSkillRecordRow> = report
-            .agents
-            .iter()
-            .flat_map(|agent| {
-                agent.skills.iter().map(move |skill| DeviceSkillRecordRow {
-                    device_id: report.device_id.clone(),
-                    agent_key: agent.key.clone(),
-                    skill_name: skill.name.clone(),
-                    content_hash: skill.content_hash.clone(),
-                    deployed_at: skill.deployed_at,
-                    reported_commit: Some(snapshot.head_commit.clone()),
-                })
-            })
-            .collect();
-        if store.apply_device_state_if_newer(
-            &report.device_id, report.reported_at, &snapshot.head_commit, &rows,
-        )? {
-            summary.states += 1;
+    if !snapshot.states.is_empty() {
+        summary.warnings.push("unsigned device state ignored".into());
+    }
+    for (device_id, message) in &snapshot.signed_states {
+        let applied = store.with_conn_mut(|conn| {
+            use super::device_envelope::{self, MessageKind};
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let (public_key, active) = super::device_pairing::trusted_public_key(
+                &tx, device_id, &message.envelope.key_id, MessageKind::LibraryReport,
+            )?.context("state signing key is not paired")?;
+            if !active { bail!("state signing key is revoked"); }
+            let signature = hex::decode(&message.signature).context("invalid state signature")?;
+            device_envelope::verify_envelope(
+                &message.envelope, &signature, message.payload_json.as_bytes(), &public_key,
+                device_id, &message.envelope.key_id, MessageKind::LibraryReport, now,
+            )?;
+            let payload: SignedStatePayload = serde_json::from_str(&message.payload_json)?;
+            if payload.kind != "agent-state-v1" || payload.report.device_id != *device_id
+                || payload.report.reported_at != message.envelope.issued_at {
+                bail!("signed state identity or timestamp mismatch");
+            }
+            validate_state_report_for_directory(&payload.report, device_id)?;
+            // Legacy unsigned last_seen_at is not a trustworthy watermark.
+            // A separate transactional watermark prevents it from blocking the
+            // first authenticated report and prevents later rollbacks.
+            tx.execute_batch("CREATE TABLE IF NOT EXISTS signed_state_watermarks_v1 (device_id TEXT PRIMARY KEY, reported_at INTEGER NOT NULL, key_id TEXT NOT NULL, payload_sha256 TEXT NOT NULL)")?;
+            let changed = tx.execute(
+                "INSERT INTO signed_state_watermarks_v1(device_id, reported_at, key_id, payload_sha256) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(device_id) DO UPDATE SET reported_at = excluded.reported_at, key_id = excluded.key_id, payload_sha256 = excluded.payload_sha256
+                 WHERE signed_state_watermarks_v1.reported_at < excluded.reported_at",
+                rusqlite::params![device_id, payload.report.reported_at, &message.envelope.key_id, &message.envelope.payload_sha256],
+            )?;
+            if changed != 0 {
+                tx.execute("UPDATE devices SET last_seen_at = ?2, last_state_commit = ?3 WHERE id = ?1",
+                    rusqlite::params![device_id, payload.report.reported_at, &snapshot.head_commit])?;
+                tx.execute("DELETE FROM device_skill_records WHERE device_id = ?1", rusqlite::params![device_id])?;
+                for agent in &payload.report.agents {
+                    for skill in &agent.skills {
+                        tx.execute(
+                            "INSERT INTO device_skill_records (device_id, agent_key, skill_name, content_hash, deployed_at, reported_commit) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                            rusqlite::params![device_id, &agent.key, &skill.name, &skill.content_hash, &skill.deployed_at, &snapshot.head_commit],
+                        )?;
+                    }
+                }
+            }
+            let duplicate = if changed == 0 {
+                tx.query_row("SELECT reported_at = ?2 AND key_id = ?3 AND payload_sha256 = ?4 FROM signed_state_watermarks_v1 WHERE device_id = ?1",
+                    rusqlite::params![device_id, payload.report.reported_at, &message.envelope.key_id, &message.envelope.payload_sha256], |row| row.get::<_, bool>(0))?
+            } else { false };
+            tx.commit()?;
+            Ok(if changed != 0 { 1u8 } else if duplicate { 0 } else { 2 })
+        });
+        match applied {
+            Ok(1) => summary.states += 1,
+            Ok(0) => {},
+            Ok(_) => summary.warnings.push(format!("devices/{device_id}: signed state is not newer than the last verified report")),
+            Err(_) => summary.warnings.push(format!("devices/{device_id}: signed state could not be verified or applied")),
         }
     }
 
@@ -1445,15 +1545,15 @@ pub fn import_snapshot(store: &SkillStore, snapshot: &ChannelSnapshot) -> Result
     // Recompute the projection for every instruction: cheap (a handful of
     // rows) and immune to ordering effects between receipts and states.
     let threshold = online_threshold_secs(store);
-    let executing_by_device: HashMap<String, Vec<String>> = states_by_id
-        .iter()
-        .map(|(id, report)| (id.clone(), report.executing.clone()))
-        .collect();
+    // Legacy unsigned state must not affect instruction state either. The
+    // signed state protocol does not currently claim an executing operation.
+    let executing_by_device: HashMap<String, Vec<String>> = HashMap::new();
     let devices = store.get_devices()?;
-    let last_seen_by_id: HashMap<String, Option<i64>> = devices
-        .iter()
-        .map(|d| (d.id.clone(), d.last_seen_at))
-        .collect();
+    let mut last_seen_by_id: HashMap<String, Option<i64>> = HashMap::new();
+    for d in &devices {
+        let seen = if store.has_trusted_device_state(&d.id)? { d.last_seen_at } else { None };
+        last_seen_by_id.insert(d.id.clone(), seen);
+    }
 
     for row in store.get_device_instructions(None)? {
         let executing = executing_by_device
@@ -1487,6 +1587,73 @@ pub fn import_snapshot(store: &SkillStore, snapshot: &ChannelSnapshot) -> Result
 mod tests {
     use super::*;
 
+    fn signed_state_fixture(identity: &super::super::device_identity::DeviceIdentity, report: DeviceStateReport) -> super::super::signed_channel::SignedChannelMessage {
+        let payload = serde_json::to_string(&SignedStatePayload { kind: "agent-state-v1".into(), report: report.clone() }).unwrap();
+        let signed = identity.sign_message(super::super::device_envelope::MessageKind::LibraryReport, payload.as_bytes().to_vec(), report.reported_at, 900).unwrap();
+        super::super::signed_channel::SignedChannelMessage { envelope: signed.envelope, signature: hex::encode(signed.signature), payload_json: payload }
+    }
+
+    #[test]
+    fn signed_state_requires_paired_active_key_and_valid_payload() {
+        use super::super::device_envelope::MessageKind;
+        let tmp = tempfile::tempdir().unwrap();
+        let receiver = SkillStore::new(&tmp.path().join("receiver.db")).unwrap();
+        let sender = SkillStore::new(&tmp.path().join("sender.db")).unwrap();
+        sender.set_setting(SETTING_DEVICE_LOCAL_ID, "device-signed").unwrap();
+        let identity = super::super::device_identity::ensure_identity(&sender).unwrap();
+        let now = chrono::Utc::now().timestamp();
+        let report = DeviceStateReport { schema: DEVICE_PROTOCOL_VERSION, device_id: "device-signed".into(), reported_at: now - 1, executing: vec![], agents: vec![] };
+        let message = signed_state_fixture(&identity, report);
+        let snapshot = |message| ChannelSnapshot { head_commit: "test".into(), signed_states: vec![("device-signed".into(), message)], ..Default::default() };
+        assert_eq!(import_snapshot(&receiver, &snapshot(message.clone())).unwrap().states, 0);
+        let manifest = identity.pairing_manifest(&[MessageKind::LibraryReport]).unwrap();
+        super::super::device_identity::approve_pairing_manifest(&receiver, &serde_json::to_string(&manifest).unwrap()).unwrap();
+        let expired_report = DeviceStateReport { schema: DEVICE_PROTOCOL_VERSION, device_id: "device-signed".into(), reported_at: now - 901, executing: vec![], agents: vec![] };
+        assert_eq!(import_snapshot(&receiver, &snapshot(signed_state_fixture(&identity, expired_report))).unwrap().states, 0);
+        let mut modified = message.clone();
+        modified.payload_json.push(' ');
+        assert_eq!(import_snapshot(&receiver, &snapshot(modified)).unwrap().states, 0);
+        assert_eq!(import_snapshot(&receiver, &snapshot(message.clone())).unwrap().states, 1);
+        assert!(receiver.has_trusted_device_state("device-signed").unwrap());
+        receiver.with_conn(|conn| super::super::device_pairing::revoke_key(conn, "device-signed", &identity.key_id, MessageKind::LibraryReport)).unwrap();
+        assert!(!receiver.has_trusted_device_state("device-signed").unwrap());
+        assert_eq!(import_snapshot(&receiver, &snapshot(message)).unwrap().states, 0);
+    }
+
+    #[test]
+    fn signed_state_roundtrip_over_git_preserves_last_verified_state() {
+        use super::super::device_envelope::MessageKind;
+        let tmp = tempfile::tempdir().unwrap();
+        let sender = SkillStore::new(&tmp.path().join("sender.db")).unwrap();
+        let receiver = SkillStore::new(&tmp.path().join("receiver.db")).unwrap();
+        sender.set_setting(SETTING_DEVICE_LOCAL_ID, "device-roundtrip").unwrap();
+        let identity = super::super::device_identity::ensure_identity(&sender).unwrap();
+        let manifest = identity.pairing_manifest(&[MessageKind::LibraryReport]).unwrap();
+        super::super::device_identity::approve_pairing_manifest(&receiver, &serde_json::to_string(&manifest).unwrap()).unwrap();
+        let remote = tmp.path().join("channel.git");
+        run_git(None, None, &["init", "--bare", &remote.to_string_lossy()]).unwrap();
+        let url = remote.to_string_lossy().to_string();
+        let report = DeviceStateReport {
+            schema: DEVICE_PROTOCOL_VERSION, device_id: "device-roundtrip".into(),
+            reported_at: chrono::Utc::now().timestamp(), executing: vec![],
+            agents: vec![AgentStateReport { key: "codex".into(), skills: vec![AgentSkillReport {
+                name: "fixture".into(), content_hash: None, deployed_at: None,
+            }] }],
+        };
+        publish_signed_state_report(&sender, &url, "devices-test", &report).unwrap();
+        let snapshot = fetch_channel_snapshot(&url, "devices-test").unwrap();
+        assert_eq!(import_snapshot(&receiver, &snapshot).unwrap().states, 1);
+        let repeated = import_snapshot(&receiver, &snapshot).unwrap();
+        assert_eq!(repeated.states, 0);
+        assert!(repeated.warnings.is_empty());
+        assert_eq!(receiver.get_device_skill_records(Some("device-roundtrip")).unwrap()[0].skill_name, "fixture");
+        let mut tampered = snapshot.signed_states[0].1.clone();
+        tampered.payload_json.push(' ');
+        let bad = ChannelSnapshot { head_commit: "tampered".into(), signed_states: vec![("device-roundtrip".into(), tampered)], ..Default::default() };
+        assert_eq!(import_snapshot(&receiver, &bad).unwrap().states, 0);
+        assert_eq!(receiver.get_device_skill_records(Some("device-roundtrip")).unwrap()[0].skill_name, "fixture");
+    }
+
     #[test]
     fn channel_rejects_state_report_in_another_device_directory() {
         let temp = tempfile::tempdir().unwrap();
@@ -1515,9 +1682,16 @@ mod tests {
     fn device_state_older_or_equal_snapshot_cannot_replace_newer_inventory() {
         let temp = tempfile::tempdir().unwrap();
         let store = SkillStore::new(&temp.path().join("state.db")).unwrap();
+        let signer_store = SkillStore::new(&temp.path().join("signer.db")).unwrap();
+        signer_store.set_setting(SETTING_DEVICE_LOCAL_ID, "device-a").unwrap();
+        let identity = super::super::device_identity::ensure_identity(&signer_store).unwrap();
+        let manifest = identity.pairing_manifest(&[super::super::device_envelope::MessageKind::LibraryReport]).unwrap();
+        super::super::device_identity::approve_pairing_manifest(&store, &serde_json::to_string(&manifest).unwrap()).unwrap();
+        let now = chrono::Utc::now().timestamp();
+        store.upsert_device(&DeviceRow { id: "device-a".into(), name: "device-a".into(), platform: None, created_at: 1, last_seen_at: Some(now + 10_000), last_state_commit: Some("legacy".into()) }).unwrap();
         let report = |time, skill: &str| ChannelSnapshot {
             head_commit: format!("commit-{time}"),
-            states: vec![DeviceStateReport {
+            signed_states: vec![("device-a".into(), signed_state_fixture(&identity, DeviceStateReport {
                 schema: DEVICE_PROTOCOL_VERSION,
                 device_id: "device-a".into(),
                 reported_at: time,
@@ -1528,18 +1702,18 @@ mod tests {
                         name: skill.into(), content_hash: None, deployed_at: None,
                     }],
                 }],
-            }],
+            }))],
             ..Default::default()
         };
-        import_snapshot(&store, &report(200, "new")).unwrap();
-        import_snapshot(&store, &report(100, "old")).unwrap();
-        import_snapshot(&store, &report(200, "same-time")).unwrap();
+        import_snapshot(&store, &report(now - 2, "new")).unwrap();
+        import_snapshot(&store, &report(now - 3, "old")).unwrap();
+        import_snapshot(&store, &report(now - 2, "same-time")).unwrap();
         let row = store.get_device("device-a").unwrap().unwrap();
-        assert_eq!(row.last_seen_at, Some(200));
+        assert_eq!(row.last_seen_at, Some(now - 2));
         let skills = store.get_device_skill_records(Some("device-a")).unwrap();
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].skill_name, "new");
-        import_snapshot(&store, &report(300, "newest")).unwrap();
+        import_snapshot(&store, &report(now - 1, "newest")).unwrap();
         assert_eq!(store.get_device_skill_records(Some("device-a")).unwrap()[0].skill_name, "newest");
     }
 
@@ -1937,19 +2111,18 @@ mod tests {
 
         let summary = import_snapshot(&store, &snapshot).unwrap();
         assert_eq!(summary.devices, 1);
-        assert_eq!(summary.states, 1);
+        assert_eq!(summary.states, 0);
+        assert!(summary.warnings.iter().any(|w| w.contains("unsigned device state")));
         assert_eq!(summary.instructions, 1);
 
         let devices = store.get_devices().unwrap();
         assert_eq!(devices.len(), 1);
         assert_eq!(devices[0].name, "Test Dev");
-        assert_eq!(devices[0].last_seen_at, Some(5_000));
-        assert_eq!(devices[0].last_state_commit.as_deref(), Some("c0ffee"));
+        assert_eq!(devices[0].last_seen_at, None);
+        assert_eq!(devices[0].last_state_commit, None);
 
         let records = store.get_device_skill_records(Some("dev-test")).unwrap();
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].agent_key, "codex");
-        assert_eq!(records[0].skill_name, "demo");
+        assert!(records.is_empty());
 
         // No receipt, TTL (2_000) long past the import-time clock: the
         // projection must say expired, never pending or success.

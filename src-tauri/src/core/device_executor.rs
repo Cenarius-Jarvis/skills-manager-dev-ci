@@ -566,6 +566,43 @@ fn collect_agent_states(mappings: &[AgentMapping], allowed_roots: &[PathBuf]) ->
     }).collect()
 }
 
+/// Build a complete read-only snapshot for explicit local agent directories.
+/// This function does not read instructions, write agent files or publish.
+/// An incomplete scan is an error, never an authoritative empty inventory.
+pub fn build_state_report(
+    device_id: &str,
+    mappings: &[AgentMapping],
+    allowed_roots: &[PathBuf],
+    reported_at: i64,
+) -> Result<DeviceStateReport> {
+    devices::validate_device_id(device_id)?;
+    if mappings.is_empty() {
+        bail!("report-state requires at least one --agent key=absolute-directory");
+    }
+    let mut seen = std::collections::HashSet::new();
+    for mapping in mappings {
+        devices::validate_agent_key(&mapping.key)?;
+        if !seen.insert(&mapping.key) {
+            bail!("duplicate agent key in state report");
+        }
+        if !mapping.dir.is_absolute() {
+            bail!("agent inventory directory must be absolute");
+        }
+    }
+    if allowed_roots.iter().any(|root| !root.is_absolute()) {
+        bail!("allowed inventory roots must be absolute");
+    }
+    let report = DeviceStateReport {
+        schema: devices::DEVICE_PROTOCOL_VERSION,
+        device_id: device_id.to_string(),
+        reported_at,
+        executing: vec![],
+        agents: collect_agent_states(mappings, allowed_roots)?,
+    };
+    devices::validate_state_report(&report)?;
+    Ok(report)
+}
+
 /// Runs one executor cycle. On entry, an exclusive lock is taken for the
 /// whole run; a concurrent run (scheduler overlap) exits immediately with
 /// `considered = 0` instead of queueing behind itself.
@@ -878,6 +915,28 @@ mod tests {
     use crate::core::central_repo;
 
     #[test]
+    fn signed_state_inventory_is_complete_explicit_and_read_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("agent");
+        let skill = root.join("example").join("SKILL.md");
+        std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+        std::fs::write(&skill, b"fixture").unwrap();
+        let mapping = AgentMapping { key: "codex".into(), dir: root.clone() };
+        let report = build_state_report("dev-one", &[mapping.clone()], &[], 100).unwrap();
+        assert_eq!(report.device_id, "dev-one");
+        assert_eq!(report.agents[0].skills[0].name, "example");
+        assert_eq!(std::fs::read(&skill).unwrap(), b"fixture");
+        assert!(build_state_report("dev-one", &[], &[], 100).is_err());
+        assert!(build_state_report("dev-one", &[mapping.clone(), mapping], &[], 100).is_err());
+        assert!(build_state_report("dev-one", &[AgentMapping {
+            key: "codex".into(), dir: temp.path().join("missing"),
+        }], &[], 100).is_err());
+        assert!(build_state_report("dev-one", &[AgentMapping {
+            key: "codex".into(), dir: PathBuf::from("relative"),
+        }], &[], 100).is_err());
+    }
+
+    #[test]
     fn inventory_requires_all_configured_agent_directories() {
         let temp = tempfile::tempdir().unwrap();
         let good = temp.path().join("good");
@@ -951,13 +1010,12 @@ mod tests {
         assert_eq!(snapshot.states.len(), 2);
 
         let store = crate::core::skill_store::SkillStore::new(&temp.path().join("projection.db")).unwrap();
-        devices::import_snapshot(&store, &snapshot).unwrap();
+        let imported = devices::import_snapshot(&store, &snapshot).unwrap();
+        assert!(imported.warnings.iter().any(|warning| warning.contains("unsigned device state ignored")));
         let main = store.get_device_skill_records(Some("dev-main")).unwrap();
         let remote_records = store.get_device_skill_records(Some("dev-remote")).unwrap();
-        assert_eq!(main.len(), 1);
-        assert_eq!(main[0].skill_name, "shared");
-        assert_eq!(remote_records.len(), 1);
-        assert_eq!(remote_records[0].skill_name, "remote-only");
+        assert!(main.is_empty());
+        assert!(remote_records.is_empty());
 
         // A failure on the simulated remote machine suppresses a new state,
         // while a receipt can still travel through the same channel.
@@ -977,7 +1035,8 @@ mod tests {
         assert_eq!(old_remote.reported_at, 2000);
         assert_eq!(old_remote.agents[0].skills[0].name, "remote-only");
         devices::import_snapshot(&store, &refreshed).unwrap();
-        assert_eq!(store.get_device_skill_records(Some("dev-remote")).unwrap()[0].skill_name, "remote-only");
+        assert!(store.get_device_skill_records(Some("dev-remote")).unwrap().is_empty());
+        assert!(store.get_device("dev-remote").unwrap().unwrap().last_seen_at.is_none());
     }
 
     #[cfg(unix)]
@@ -1667,9 +1726,8 @@ mod tests {
             rows[0].instruction_commit.as_deref(),
             "receipt must match the instruction commit"
         );
-        // The device is alive from the manager's point of view.
-        let devs = store.get_devices().unwrap();
-        assert!(devs[0].last_seen_at.is_some());
+        // Legacy unsigned fixture state does not establish device presence.
+        assert!(store.get_device("dev-e2e").unwrap().unwrap().last_seen_at.is_none());
 
         daemon.kill();
     }
