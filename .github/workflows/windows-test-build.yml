@@ -1,4 +1,4 @@
-name: Test builds label 10 (crash recovery and isolated bridge)
+name: Test builds label 11 (signed device state)
 # Deliberately narrow trigger, same scheme as two-device-simulation.yml:
 # only pushes to this branch that touch this workflow file build, so a
 # release is an explicit act — bump the build label below to cut a new
@@ -7,7 +7,7 @@ name: Test builds label 10 (crash recovery and isolated bridge)
 # it never touches the production store or replaces the production install.
 on:
   push:
-    branches: [codex/restore-crash-tests]
+    branches: [codex/signed-device-status]
     paths: ['.github/workflows/windows-test-build.yml']
 permissions:
   contents: read

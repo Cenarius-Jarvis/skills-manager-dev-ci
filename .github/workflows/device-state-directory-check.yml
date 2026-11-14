@@ -2,6 +2,9 @@ name: Device state directory validation
 on:
   push:
     branches: [codex/signed-device-status]
+    paths:
+      - 'src-tauri/**'
+      - '.github/workflows/device-state-directory-check.yml'
   workflow_dispatch:
 permissions:
   contents: read
