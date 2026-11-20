@@ -1,7 +1,6 @@
 {
   "bundle": {
-    "createUpdaterArtifacts": false,
-    "externalBin": ["target/release/skills-manager-cli"]
+    "createUpdaterArtifacts": false
   },
   "plugins": {
     "updater": {

@@ -51,7 +51,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-user-dirs xdg-utils
 
-      - name: Build and stage the matching CLI
+      # Tauri bundles the Cargo binary in src/bin alongside the main program.
+      - name: Build the matching CLI
         shell: bash
         env:
           CLI_SUFFIX: ${{ matrix.suffix }}
@@ -60,7 +61,6 @@ jobs:
           cli="src-tauri/target/release/skills-manager-cli"
           version=$(node -p "require('./src-tauri/tauri.conf.json').version")
           test "$("$cli$CLI_SUFFIX" --version | tr -d '\r')" = "skills-manager-cli $version"
-          cp "$cli$CLI_SUFFIX" "$cli-$(rustc --print host-tuple)$CLI_SUFFIX"
 
       - name: Build desktop packages
         shell: bash
