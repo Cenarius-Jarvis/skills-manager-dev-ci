@@ -40,6 +40,12 @@ pub async fn device_skill_mirror_save(store: State<'_, Arc<SkillStore>>, device_
     blocking(move || mirror::save(&mirror::bound_source(&store, &device_id, &source_id)?, &skill_path, &base_commit, content)).await
 }
 
+#[tauri::command]
+pub async fn device_skill_mirror_discard(store: State<'_, Arc<SkillStore>>, device_id: String, source_id: String, skill_path: String) -> Result<Draft, String> {
+    let store = store.inner().clone();
+    blocking(move || mirror::discard(&mirror::bound_source(&store, &device_id, &source_id)?, &skill_path)).await
+}
+
 #[derive(Serialize)]
 pub struct PublishResult {
     commit: String,

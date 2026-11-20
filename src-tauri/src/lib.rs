@@ -1136,6 +1136,7 @@ pub fn run() {
             commands::device_skill_mirror::device_skill_mirror_refresh,
             commands::device_skill_mirror::device_skill_mirror_read,
             commands::device_skill_mirror::device_skill_mirror_save,
+            commands::device_skill_mirror::device_skill_mirror_discard,
             commands::device_skill_mirror::device_skill_publish,
             commands::device_worker::device_worker_status,
             commands::device_worker::device_worker_set,

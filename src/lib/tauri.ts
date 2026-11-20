@@ -1140,6 +1140,9 @@ export const deviceSkillMirrorSave = (
 export const deviceSkillPublish = (deviceId: string, sourceId: string, skillPath: string, agentKey: string) =>
   invoke<DeviceSkillPublishResult>("device_skill_publish", { deviceId, sourceId, skillPath, agentKey });
 
+export const deviceSkillMirrorDiscard = (deviceId: string, sourceId: string, skillPath: string) =>
+  invoke<DeviceSkillMirrorDocument>("device_skill_mirror_discard", { deviceId, sourceId, skillPath });
+
 export interface DeviceWorkerStatus {
   enabled: boolean;
   github_ssh: boolean;

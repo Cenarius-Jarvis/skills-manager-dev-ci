@@ -83,19 +83,8 @@ pub fn apply(store: &SkillStore, payload: &SignedCommandPayload) -> Result<Optio
     if tip != revision && !fetched.graph_descendant_of(tip, revision)? {
         bail!("pinned commit is not on the configured skill branch");
     }
-    let commit = fetched.find_commit(revision)?;
-    if commit.parent_count() != 1 { bail!("repository edit must have exactly one parent"); }
-    let parent = commit.parent(0)?;
-    let old = device_skill_mirror::document_blob(&fetched, &parent, subpath)?;
-    let new = device_skill_mirror::document_blob(&fetched, &commit, subpath)?;
     let manifest = if subpath == "." { PathBuf::from("SKILL.md") } else { Path::new(subpath).join("SKILL.md") };
-    let old_tree = parent.tree()?;
-    let new_tree = commit.tree()?;
-    let diff = fetched.diff_tree_to_tree(Some(&old_tree), Some(&new_tree), None)?;
-    if diff.deltas().len() != 1 || diff.deltas().any(|delta|
-        delta.old_file().path() != Some(manifest.as_path()) || delta.new_file().path() != Some(manifest.as_path())) {
-        bail!("the published commit changes files outside the selected SKILL.md");
-    }
+    let (old, new) = checked_document_edit(&fetched, revision, subpath, &manifest)?;
     let local_tree = local_head.peel_to_tree()?;
     let tracked = local_tree.get_path(&manifest)?;
     if !matches!(tracked.filemode(), 0o100644 | 0o100755) {
@@ -155,6 +144,24 @@ pub fn apply(store: &SkillStore, payload: &SignedCommandPayload) -> Result<Optio
     Ok(Some(selected.or(existing).context("target deployment missing")?))
 }
 
+fn checked_document_edit(repo: &Repository, revision: Oid, subpath: &str, manifest: &Path) -> Result<(Vec<u8>, Vec<u8>)> {
+    let commit = repo.find_commit(revision)?;
+    if commit.parent_count() != 1 { bail!("repository edit must have exactly one parent"); }
+    let parent = commit.parent(0)?;
+    let old_tree = parent.tree()?;
+    let new_tree = commit.tree()?;
+    let diff = repo.diff_tree_to_tree(Some(&old_tree), Some(&new_tree), None)?;
+    let mut deltas = diff.deltas();
+    let matches = deltas.next().is_some_and(|delta|
+        delta.old_file().path() == Some(manifest) && delta.new_file().path() == Some(manifest));
+    if !matches || deltas.next().is_some() {
+        bail!("the published commit changes files outside the selected SKILL.md");
+    }
+    let old = device_skill_mirror::document_blob(repo, &parent, subpath)?;
+    let new = device_skill_mirror::document_blob(repo, &commit, subpath)?;
+    Ok((old, new))
+}
+
 struct GitAgentTargets {
     existing: Option<PathBuf>,
     selected: Option<PathBuf>,
@@ -192,4 +199,31 @@ fn agent_targets(store: &SkillStore, payload: &SignedCommandPayload, skill_id: &
         }
     };
     Ok(GitAgentTargets { existing, selected })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_repository_edit_rejects_a_commit_with_extra_changes() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let repo = Repository::init_bare(tmp.path())?;
+        let signature = git2::Signature::now("Fixture", "fixture@example.invalid")?;
+        let mut files = repo.treebuilder(None)?;
+        files.insert("SKILL.md", repo.blob(b"old skill")?, 0o100644)?;
+        files.insert("extra.txt", repo.blob(b"unchanged file")?, 0o100644)?;
+        let tree = repo.find_tree(files.write()?)?;
+        let base = repo.find_commit(repo.commit(None, &signature, &signature, "initial", &tree, &[])?)?;
+        let expected_file = Path::new("SKILL.md");
+        files.insert("SKILL.md", repo.blob(b"updated skill")?, 0o100644)?;
+        let tree = repo.find_tree(files.write()?)?;
+        let clean = repo.commit(None, &signature, &signature, "edit document", &tree, &[&base])?;
+        assert_eq!(checked_document_edit(&repo, clean, ".", expected_file)?, (b"old skill".to_vec(), b"updated skill".to_vec()));
+        files.insert("extra.txt", repo.blob(b"unrelated update")?, 0o100644)?;
+        let tree = repo.find_tree(files.write()?)?;
+        let extra = repo.commit(None, &signature, &signature, "edit two files", &tree, &[&base])?;
+        assert!(checked_document_edit(&repo, extra, ".", expected_file).is_err());
+        Ok(())
+    }
 }

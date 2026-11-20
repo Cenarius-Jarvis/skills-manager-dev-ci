@@ -50,6 +50,8 @@ jobs:
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib device_receipts::tests -- --test-threads=1
       - name: Test offline device repositories and publication
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib device_skill_mirror -- --test-threads=1
+      - name: Test remote edit confinement
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib device_repository_edit -- --test-threads=1
       - name: Test legacy desktop startup on a copied configuration fixture
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib upgrade_v10_retains_preset_skills_and_agent_deployments
   frontend:
@@ -62,7 +64,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npx vitest run src/views/Devices.test.tsx src/components/RemoteDeviceLibrary.test.tsx src/components/RemoteDeviceLibraryInventory.test.tsx
+      - run: npx vitest run src/views/Devices.test.tsx src/components/RemoteDeviceLibrary.test.tsx src/components/RemoteDeviceLibraryInventory.test.tsx src/components/RemoteSkillWorkspace.test.tsx
       - run: npm run build
       - run: node scripts/check-i18n.mjs
 

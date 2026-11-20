@@ -221,6 +221,9 @@ pub fn read(source: &RepositorySource, path: &str) -> Result<Draft> {
 
 pub fn save(source: &RepositorySource, path: &str, base: &str, content: String) -> Result<Draft> {
     let _lock = lock(source)?;
+    if draft_file(source, path).with_extension("publication.json").is_file() {
+        bail!("a publication is pending; retry the saved draft first");
+    }
     let previous = read(source, path)?;
     if previous.head_commit != base {
         bail!("skill changed since it was opened");
@@ -231,6 +234,21 @@ pub fn save(source: &RepositorySource, path: &str, base: &str, content: String) 
     let draft = Draft { content, head_commit: base.into(), has_draft: true };
     write_json(&draft_file(source, path), &draft)?;
     Ok(draft)
+}
+
+pub fn discard(source: &RepositorySource, path: &str) -> Result<Draft> {
+    let _lock = lock(source)?;
+    checked_skill(source, path)?;
+    let file = draft_file(source, path);
+    if file.with_extension("publication.json").is_file() {
+        bail!("a publication is pending; retry the saved draft first");
+    }
+    match fs::remove_file(file) {
+        Ok(()) => {},
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {},
+        Err(err) => return Err(err.into()),
+    }
+    read(source, path)
 }
 
 pub fn edited_tree(repo: &Repository, tree: &Tree<'_>, path: &Path, bytes: &[u8]) -> Result<Oid> {
@@ -299,6 +317,9 @@ mod tests {
         assert_eq!(repo.find_blob(notes.id())?.content(), b"cached supporting file");
         assert!(read(&source, "../demo").is_err());
         assert!(save(&source, "demo", &head.to_string(), "stale writer".into()).is_err());
+        let reloaded = discard(&source, "demo")?;
+        assert_eq!(reloaded.content, "published version\n");
+        assert!(!reloaded.has_draft);
         Ok(())
     }
 }

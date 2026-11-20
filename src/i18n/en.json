@@ -635,7 +635,9 @@
     "lastPoll": "Last successful check {{time}}",
     "undeployed": "Undeployed (device reported)",
     "updated": "Updated (device reported)",
-    "update": "Update"
+    "update": "Update",
+    "discard": "Discard saved draft",
+    "discardConfirm": "Delete the saved draft and open the latest cached version?"
   },
   "install": {
     "title": "Install Skills",

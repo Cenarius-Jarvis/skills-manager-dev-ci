@@ -124,6 +124,24 @@ export function RemoteSkillWorkspace({ device, onConfigure, onQueued }: {
     }
   };
 
+  const discard = async () => {
+    if (!window.confirm(t("remoteWorkspace.discardConfirm"))) return;
+    setBusy(true);
+    setError("");
+    try {
+      const current = await api.deviceSkillMirrorDiscard(device.id, sourceId, path);
+      setDocument(current);
+      setDraft(current.content);
+      setStatus("");
+      setConfirming(false);
+      setSnapshot(await api.deviceSkillMirrorList(device.id, sourceId));
+    } catch (err) {
+      setError(message(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const editable = draft !== document?.content;
   const cachedSkills = (snapshot?.skills ?? []).filter((entry) =>
     [entry.name, entry.path, entry.description ?? ""].some((value) => value.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())),
@@ -195,6 +213,8 @@ export function RemoteSkillWorkspace({ device, onConfigure, onQueued }: {
               onClick={() => void save(false)}>{t("remoteWorkspace.save")}</button>
             {editable && <button type="button" className="app-button-secondary" disabled={busy}
               onClick={() => { setDraft(document.content); setConfirming(false); }}>{t("remoteWorkspace.reset")}</button>}
+            {document.has_draft && <button type="button" className="app-button-secondary" disabled={busy}
+              onClick={() => void discard()}>{t("remoteWorkspace.discard")}</button>}
             <label className="flex flex-col gap-1">
               {t("remoteWorkspace.target")}
               <input className="app-input" list="remote-workspace-agent-options" value={agent} disabled={busy}

@@ -635,7 +635,9 @@
     "lastPoll": "上次成功检查 {{time}}",
     "undeployed": "已取消部署（设备已报告）",
     "updated": "已更新（设备已报告）",
-    "update": "更新"
+    "update": "更新",
+    "discard": "丢弃本地草稿",
+    "discardConfirm": "删除本地草稿并打开最后一次同步的版本？"
   },
   "install": {
     "title": "安装 Skills",

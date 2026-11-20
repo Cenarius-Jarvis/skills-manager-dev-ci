@@ -98,6 +98,7 @@ fn channel_config_status(store: &SkillStore) -> Result<ChannelStatus, AppError> 
 fn build_page(store: &SkillStore) -> Result<DevicesPage, AppError> {
     let now = chrono::Utc::now().timestamp();
     let threshold = devices::online_threshold_secs(store);
+    let sources = store.list_repository_sources().map_err(AppError::db)?;
     let mut devices_out = Vec::new();
     for row in store.get_devices().map_err(|e| AppError::db(e))? {
         let trusted = store.has_trusted_device_state(&row.id).map_err(|e| AppError::db(e))?;
@@ -107,9 +108,15 @@ fn build_page(store: &SkillStore) -> Result<DevicesPage, AppError> {
             store.get_device_skill_records(Some(&row.id)).map_err(|e| AppError::db(e))?
         } else { Vec::new() };
         let library = devices::library_view(store, &row.id).map_err(|e| AppError::db(e))?;
+        let name = if row.name == row.id {
+            sources.iter().find(|source| source.device_id.as_deref() == Some(row.id.as_str()))
+                .map(|source| source.name.clone()).unwrap_or(row.name)
+        } else {
+            row.name
+        };
         devices_out.push(DeviceWithStatus {
             id: row.id,
-            name: row.name,
+            name,
             platform: row.platform,
             created_at: row.created_at,
             last_seen_at,
