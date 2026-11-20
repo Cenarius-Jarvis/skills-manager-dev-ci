@@ -579,7 +579,7 @@
       "localName": "本機",
       "remoteName": "E470C"
     },
-    "remoteTitle": "技能庫 · {name}（遠端裝置）",
+    "remoteTitle": "技能庫 · {{name}}（遠端裝置）",
     "remoteSubtitle": "該裝置自行回報的 Agent 技能——唯讀",
     "remoteManageLink": "管理裝置與下發部署請求 →"
   },

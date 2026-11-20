@@ -484,7 +484,23 @@ fn create_signed_instruction_internal(
         &identity, device_id, &payload, now, ttl,
     )
     .map_err(input_err)?;
+    publish_prepared_signed_instruction(store, &url, &branch, &payload, &message)
+}
 
+pub(crate) fn publish_prepared_signed_instruction(
+    store: &SkillStore,
+    url: &str,
+    branch: &str,
+    payload: &signed_channel::SignedCommandPayload,
+    message: &signed_channel::SignedChannelMessage,
+) -> Result<DeviceInstructionRow, AppError> {
+    let device_id = payload.target_device.as_str();
+    let id = &message.envelope.message_id;
+    if let Some(existing) = store.get_device_instruction(id).map_err(AppError::db)? {
+        if existing.instruction_commit.is_some() {
+            return Ok(existing);
+        }
+    }
     // Record locally first. The request becomes eligible for receipt
     // projection only after the channel confirms the publication.
     let mut row = DeviceInstructionRow {
@@ -498,7 +514,7 @@ fn create_signed_instruction_internal(
         agent_key: payload.agent_key.clone(),
         created_at: message.envelope.issued_at,
         expires_at: Some(message.envelope.expires_at),
-        created_by: Some(identity.device_id.clone()),
+        created_by: Some(payload.issued_by.clone()),
         instruction_commit: None,
         receipt_commit: None,
         state: devices::TASK_STATE_PENDING.to_string(),
@@ -510,10 +526,10 @@ fn create_signed_instruction_internal(
     };
     store.upsert_device_instruction(&row).map_err(AppError::db)?;
     let commit = with_retry(|| {
-        signed_channel::publish_signed_command(store, &url, &branch, device_id, &message)
+        signed_channel::publish_signed_command(store, url, branch, device_id, message)
     })
     .map_err(git_err)?;
-    crate::core::device_receipts::remember_publication(store, &row.id, &url, &branch, &commit)
+    crate::core::device_receipts::remember_publication(store, &row.id, url, branch, &commit)
         .map_err(AppError::db)?;
     row.instruction_commit = Some(commit.clone());
     store.log_audit(

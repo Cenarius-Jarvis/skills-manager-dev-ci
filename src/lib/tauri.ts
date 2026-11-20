@@ -1095,3 +1095,61 @@ export const repositorySourcesAdd = (name: string, deviceId: string | null, url:
 export const repositorySourcesRemove = (id: string) => invoke<boolean>("repository_sources_remove", { id });
 export const repositorySourcesSnapshot = (id: string) => invoke<RepositorySnapshot | null>("repository_sources_snapshot", { id });
 export const repositorySourcesRefresh = (id: string) => invoke<RepositorySnapshot>("repository_sources_refresh", { id });
+
+export interface DeviceSkillMirrorEntry {
+  path: string;
+  name: string;
+  description?: string | null;
+  has_draft: boolean;
+}
+
+export interface DeviceSkillMirrorSnapshot {
+  head_commit: string | null;
+  synced_at: number | null;
+  skills: DeviceSkillMirrorEntry[];
+}
+
+export interface DeviceSkillMirrorDocument {
+  content: string;
+  head_commit: string;
+  has_draft: boolean;
+}
+
+export interface DeviceSkillPublishResult {
+  commit: string;
+  queued: boolean;
+  instruction_id?: string | null;
+  message?: string | null;
+}
+
+export const deviceSkillMirrorList = (deviceId: string, sourceId: string) =>
+  invoke<DeviceSkillMirrorSnapshot>("device_skill_mirror_list", { deviceId, sourceId });
+
+export const deviceSkillMirrorRefresh = (deviceId: string, sourceId: string) =>
+  invoke<DeviceSkillMirrorSnapshot>("device_skill_mirror_refresh", { deviceId, sourceId });
+
+export const deviceSkillMirrorRead = (deviceId: string, sourceId: string, skillPath: string) =>
+  invoke<DeviceSkillMirrorDocument>("device_skill_mirror_read", { deviceId, sourceId, skillPath });
+
+export const deviceSkillMirrorSave = (
+  deviceId: string, sourceId: string, skillPath: string, baseCommit: string, content: string,
+) => invoke<DeviceSkillMirrorDocument>("device_skill_mirror_save", {
+  deviceId, sourceId, skillPath, baseCommit, content,
+});
+
+export const deviceSkillPublish = (deviceId: string, sourceId: string, skillPath: string, agentKey: string) =>
+  invoke<DeviceSkillPublishResult>("device_skill_publish", { deviceId, sourceId, skillPath, agentKey });
+
+export interface DeviceWorkerStatus {
+  enabled: boolean;
+  github_ssh: boolean;
+  last_success_at: number | null;
+  last_error: string | null;
+  authorized_agents: string[];
+}
+
+export const deviceWorkerStatus = () => invoke<DeviceWorkerStatus>("device_worker_status");
+export const deviceWorkerSet = (enabled: boolean, githubSsh: boolean) =>
+  invoke<DeviceWorkerStatus>("device_worker_set", { enabled, githubSsh });
+export const deviceWorkerAuthorize = (agentKey: string, allow: boolean) =>
+  invoke<DeviceWorkerStatus>("device_worker_authorize", { agentKey, allow });

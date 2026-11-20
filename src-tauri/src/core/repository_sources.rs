@@ -100,7 +100,7 @@ pub fn add_source(store: &SkillStore, name: &str, device_id: Option<String>, url
     Ok(source)
 }
 
-fn clone_bare(url: &str, branch: &str, path: &Path) -> Result<()> {
+pub(super) fn clone_bare(url: &str, branch: &str, path: &Path) -> Result<()> {
     let mut cmd = git_command();
     cmd.args(["clone", "--quiet", "--bare", "--single-branch", "--depth", "1", "--branch", branch, "--"])
         .arg(url).arg(path)
@@ -125,7 +125,7 @@ fn clone_bare(url: &str, branch: &str, path: &Path) -> Result<()> {
     }
 }
 
-fn scan_tree(repo: &git2::Repository, tree: &git2::Tree<'_>, path: &str,
+pub(super) fn scan_tree(repo: &git2::Repository, tree: &git2::Tree<'_>, path: &str,
              out: &mut Vec<RepositorySkill>, visited: &mut usize, depth: usize) -> Result<()> {
     if depth > MAX_DEPTH { bail!("repository inventory exceeded the depth limit"); }
     let mut has_manifest = false;

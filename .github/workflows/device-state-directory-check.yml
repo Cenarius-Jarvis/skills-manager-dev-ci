@@ -1,10 +1,12 @@
 name: Device state and signed receipts
 on:
   push:
-    branches: [codex/signed-device-status]
+    branches: [codex/signed-device-status, codex/device-skill-workspaces]
     paths:
       - 'src-tauri/**'
       - 'src/views/Devices.tsx'
+      - 'src/components/Remote*.tsx'
+      - 'src/components/DeviceWorkerSettings.tsx'
       - 'src/lib/tauri.ts'
       - 'src/i18n/**'
       - '.github/workflows/device-state-directory-check.yml'
@@ -46,6 +48,8 @@ jobs:
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib device_page_ -- --test-threads=1
       - name: Test signed receipt projection across a Git channel
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib device_receipts::tests -- --test-threads=1
+      - name: Test offline device repositories and publication
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib device_skill_mirror -- --test-threads=1
       - name: Test legacy desktop startup on a copied configuration fixture
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib upgrade_v10_retains_preset_skills_and_agent_deployments
   frontend:
@@ -58,6 +62,6 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npx vitest run src/views/Devices.test.tsx
+      - run: npx vitest run src/views/Devices.test.tsx src/components/RemoteDeviceLibrary.test.tsx src/components/RemoteDeviceLibraryInventory.test.tsx
       - run: npm run build
       - run: node scripts/check-i18n.mjs

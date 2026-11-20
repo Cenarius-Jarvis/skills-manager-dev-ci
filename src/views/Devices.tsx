@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { DeviceWorkerSettings } from "../components/DeviceWorkerSettings";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
@@ -77,7 +78,7 @@ function stateMeta(
   }
 }
 
-export function StateBadge({ state }: { state: DeviceTaskState }) {
+export function StateBadge({ state, action }: { state: DeviceTaskState; action?: string }) {
   const { t } = useTranslation();
   const meta = stateMeta(state, t);
   const Icon = meta.icon;
@@ -87,7 +88,8 @@ export function StateBadge({ state }: { state: DeviceTaskState }) {
       data-state={state}
     >
       <Icon className={`h-3 w-3 ${state === "executing" ? "animate-spin" : ""}`} />
-      {meta.label}
+      {state === "success" && action === "undeploy" ? t("remoteWorkspace.undeployed") :
+        state === "success" && action === "apply-repository-edit" ? t("remoteWorkspace.updated") : meta.label}
     </span>
   );
 }
@@ -615,6 +617,7 @@ export function Devices() {
 
           {page.channel.configured && (
             <>
+              <DeviceWorkerSettings />
               <div className="app-panel-muted flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 text-[12px] text-muted">
                 <span className="inline-flex items-center gap-1.5">
                   <Monitor className="h-3.5 w-3.5" />
@@ -734,7 +737,7 @@ export function Devices() {
                         className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-border-subtle px-3 py-2"
                         data-testid={`instruction-${inst.id}`}
                       >
-                        <StateBadge state={inst.state} />
+                        <StateBadge state={inst.state} action={inst.action} />
                         <span className="text-[13px] font-medium">
                           {inst.skill_name ?? inst.id}
                         </span>

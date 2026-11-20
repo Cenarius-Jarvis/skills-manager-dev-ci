@@ -55,6 +55,7 @@ pub const TASK_STATE_STALE: &str = "stale";
 pub const TASK_STATE_EXPIRED: &str = "expired";
 
 pub const ACTION_DEPLOY: &str = "deploy";
+pub const ACTION_APPLY_REPOSITORY_EDIT: &str = "apply-repository-edit";
 pub const ACTION_UNDEPLOY: &str = "undeploy";
 
 const RECEIPT_STATUS_SUCCESS: &str = "success";
@@ -266,17 +267,33 @@ pub fn validate_skill_subpath(subpath: Option<&str>) -> Result<()> {
         Some(s) if s.is_empty() => return Ok(()),
         Some(s) => s,
     };
-    if subpath.len() > 256 || subpath.contains('\\') || subpath.contains("..") {
+    if subpath.len() > 256 || subpath.contains('\\') || subpath.contains(':')
+        || subpath.contains("..") || subpath.chars().any(char::is_control) {
         bail!("invalid skill_subpath {subpath:?}");
     }
     let segments = subpath.split('/');
     if subpath.starts_with('/') || subpath.ends_with('/') {
         bail!("invalid skill_subpath {subpath:?}");
     }
-    if segments.clone().any(|s| s.is_empty() || s == ".") {
+    if segments.clone().any(|s| s.is_empty() || s == "." || s.eq_ignore_ascii_case(".git")) {
         bail!("invalid skill_subpath {subpath:?}");
     }
     Ok(())
+}
+
+/// Canonical only for standard GitHub URLs; custom SSH hosts require an
+/// explicit check of the configured SSH hostname by the caller.
+pub fn github_https_url(url: &str) -> Option<String> {
+    let path = url.strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("git@github.com:"))
+        .or_else(|| url.strip_prefix("ssh://git@github.com/"))?;
+    let path = path.trim_end_matches(".git");
+    let (owner, project) = path.split_once('/')?;
+    if [owner, project].iter().any(|part| part.is_empty() || *part == "." || *part == ".."
+        || !part.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))) {
+        return None;
+    }
+    Some(format!("https://github.com/{owner}/{project}.git"))
 }
 
 pub fn validate_device_name(name: &str) -> Result<()> {

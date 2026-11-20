@@ -579,7 +579,7 @@
       "localName": "本机",
       "remoteName": "E470C"
     },
-    "remoteTitle": "Biblioteca · {name} (dispositivo remoto)",
+    "remoteTitle": "Biblioteca · {{name}} (dispositivo remoto)",
     "remoteSubtitle": "Lo que este dispositivo informó sobre sus agentes — solo lectura",
     "remoteManageLink": "Administrar dispositivos y enviar solicitudes →"
   },

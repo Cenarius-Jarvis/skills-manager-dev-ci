@@ -4,6 +4,7 @@ import { cn } from "../utils";
 import { useNavigate } from "react-router-dom";
 import type { DeviceInstructionRow, DeviceWithStatus } from "../lib/tauri";
 import { StateBadge } from "../views/Devices";
+import { RemoteSkillWorkspace } from "./RemoteSkillWorkspace";
 
 function formatTimestamp(ts: number | null, locale: string): string {
   if (!ts) return "";
@@ -54,6 +55,8 @@ export function RemoteDeviceLibrary({
           {t("devices.refresh")}
         </button>
       </div>
+
+      <RemoteSkillWorkspace key={device.id} device={device} onConfigure={() => navigate("/devices")} onQueued={onRefresh} />
 
       {error && (
         <div role="alert" className="rounded-xl border border-red-500/25 bg-red-500/10 px-4 py-3 text-[13px] text-red-600 dark:text-red-400">
@@ -172,7 +175,7 @@ export function RemoteDeviceLibrary({
                 key={inst.id}
                 className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-border-subtle px-3 py-2"
               >
-                <StateBadge state={inst.state} />
+                <StateBadge state={inst.state} action={inst.action} />
                 <span className="text-[13px] font-medium">{inst.skill_name ?? inst.id}</span>
                 <span className="app-badge text-[11px]">{t(`devices.action.${inst.action}`)}</span>
                 {inst.receipt_detail && (

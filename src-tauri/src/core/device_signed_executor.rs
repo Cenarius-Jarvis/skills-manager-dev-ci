@@ -9,8 +9,8 @@
 //! - Only agent keys explicitly authorized on this device are touched.
 //! - Deployment always goes into the agent root recorded at authorization
 //!   time; nothing in the command can move the target.
-//! - A skill already present in this device's library is never overwritten
-//!   by a channel command (the pilot has no update flow yet).
+//! - Existing skills can only be updated from their recorded Git source
+//!   or by a checked document edit from the device's own library origin.
 //! - A prepared command whose run crashes leaves outcome unknown: the claim
 //!   and preparation are consumed, so a later run never silently replays it.
 
@@ -1256,6 +1256,9 @@ fn resend_pending_receipts(store: &SkillStore, config: &SignedExecutorConfig) ->
 /// One executor cycle. Fetches, verifies, executes and acknowledges.
 pub fn run_signed_once(store: &SkillStore, config: &SignedExecutorConfig) -> Result<SignedRunReport> {
     devices::validate_device_id(&config.device_id)?;
+    let run_lock = std::fs::OpenOptions::new().write(true).create(true).truncate(false)
+        .open(central_repo::base_dir().join("signed-device-executor.lock"))?;
+    fs2::FileExt::try_lock_exclusive(&run_lock).context("another signed execution cycle is in progress")?;
     let mut report = SignedRunReport::default();
 
     // Answer for results whose receipt never made it out before anything new.
@@ -1332,13 +1335,16 @@ pub fn run_signed_once(store: &SkillStore, config: &SignedExecutorConfig) -> Res
         execute_prepared_and_ack(store, config, &identity, &claim_id, &payload, &mut report);
     }
 
-    let messages = signed_channel::fetch_signed_commands(&config.url, &config.branch, &config.device_id)?;
+    let mut messages = signed_channel::fetch_signed_commands(&config.url, &config.branch, &config.device_id)?;
+    messages.sort_by_key(|message| message.envelope.issued_at);
     report.fetched = messages.len();
     if messages.is_empty() {
         return Ok(report);
     }
 
-    for message in messages.iter().take(config.max_commands) {
+    let mut prepared_count = 0;
+    for message in &messages {
+        if prepared_count == config.max_commands { break; }
         let message_id = message.envelope.message_id.clone();
         let payload = match parse_command_payload(message) {
             Ok(payload) => payload,
@@ -1363,6 +1369,7 @@ pub fn run_signed_once(store: &SkillStore, config: &SignedExecutorConfig) -> Res
             continue;
         };
         let _ = prepared; // The slot is consumed; outcome must be receipted.
+        prepared_count += 1;
         // The in-flight record was written inside claim_command, in the
         // same transaction as the preparation slot itself.
         execute_prepared_and_ack(store, config, &identity, &message_id, &payload, &mut report);
@@ -1385,8 +1392,12 @@ fn execute_prepared_and_ack(
     let (status, reason, target_path): (&str, Option<String>, Option<String>) =
             match signed_channel::validate_signed_command_payload(payload)
                 .and_then(|_| match payload.action.as_str() {
-                    devices::ACTION_DEPLOY => execute_deploy(store, payload).map(|path| path),
-                    devices::ACTION_UNDEPLOY => execute_undeploy(store, payload).map(|path| path),
+                    devices::ACTION_DEPLOY => execute_deploy(store, payload),
+                    devices::ACTION_APPLY_REPOSITORY_EDIT => match super::device_repository_edit::apply(store, payload)? {
+                        Some(path) => Ok(path),
+                        None => execute_deploy(store, payload),
+                    },
+                    devices::ACTION_UNDEPLOY => execute_undeploy(store, payload),
                     other => bail!("unsupported action {other:?}"),
                 }) {
             Ok(path) => (devices::TASK_STATE_SUCCESS, None, Some(path.to_string_lossy().to_string())),

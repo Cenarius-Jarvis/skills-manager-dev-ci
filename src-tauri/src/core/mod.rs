@@ -16,6 +16,8 @@ mod native_managed_executor;
 mod two_device_simulation;
 pub mod device_inventory;
 pub mod device_signed_executor;
+pub mod device_skill_mirror;
+mod device_repository_edit;
 pub mod devices;
 pub mod error;
 pub mod file_manager;

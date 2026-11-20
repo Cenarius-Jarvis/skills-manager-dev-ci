@@ -74,7 +74,7 @@ pub fn validate_signed_command_payload(payload: &SignedCommandPayload) -> Result
         bail!("unsupported signed command schema {}", payload.schema);
     }
     match payload.action.as_str() {
-        devices::ACTION_DEPLOY | devices::ACTION_UNDEPLOY => {}
+        devices::ACTION_DEPLOY | devices::ACTION_UNDEPLOY | devices::ACTION_APPLY_REPOSITORY_EDIT => {}
         other => bail!("unsupported signed command action {other:?}"),
     }
     devices::validate_device_id(&payload.issued_by)?;
@@ -92,7 +92,12 @@ pub fn validate_signed_command_payload(payload: &SignedCommandPayload) -> Result
         }
     }
     match payload.action.as_str() {
-        devices::ACTION_DEPLOY => devices::validate_skill_url(payload.skill_url.as_deref())?,
+        devices::ACTION_DEPLOY | devices::ACTION_APPLY_REPOSITORY_EDIT => {
+            devices::validate_skill_url(payload.skill_url.as_deref())?;
+            if payload.action == devices::ACTION_APPLY_REPOSITORY_EDIT && payload.skill_commit.is_none() {
+                bail!("repository edits require a pinned commit");
+            }
+        }
         // An undeploy names the skill directly; a URL would be ignored.
         devices::ACTION_UNDEPLOY => {
             if payload.skill_url.is_some() {
@@ -247,7 +252,18 @@ pub fn publish_signed_command(
     std::fs::create_dir_all(&base)?;
     let path = base.join(format!("{}.json", message.envelope.message_id));
     if path.exists() {
-        bail!("a signed command with this id already exists on the channel");
+        if std::fs::read(&path)? != encode_channel_file(message)? {
+            bail!("a different signed command with this id already exists on the channel");
+        }
+        let relative = path.strip_prefix(&dir)?;
+        let output = super::git_command::git_command().current_dir(&dir)
+            .args(["log", "-1", "--diff-filter=A", "--format=%H", "--"])
+            .arg(relative).output()?;
+        let commit = String::from_utf8(output.stdout)?.trim().to_string();
+        if !output.status.success() || commit.is_empty() {
+            bail!("could not identify the previously published command commit");
+        }
+        return Ok(commit);
     }
     std::fs::write(&path, encode_channel_file(message)?)?;
     let author = store
@@ -527,10 +543,13 @@ mod tests {
             &fx.identity, "dev-target", &payload(&fx.identity.device_id),
             1000, DEFAULT_COMMAND_TTL_SECS,
         ).unwrap();
-        publish_signed_command(&fx.store, &url, branch, "dev-target", &message).unwrap();
+        let commit = publish_signed_command(&fx.store, &url, branch, "dev-target", &message).unwrap();
 
-        // The same id again must not overwrite what is on the channel.
-        assert!(publish_signed_command(&fx.store, &url, branch, "dev-target", &message).is_err());
+        // Retrying a confirmed push returns the original publication.
+        assert_eq!(publish_signed_command(&fx.store, &url, branch, "dev-target", &message).unwrap(), commit);
+        let mut conflicting = message.clone();
+        conflicting.signature.push('0');
+        assert!(publish_signed_command(&fx.store, &url, branch, "dev-target", &conflicting).is_err());
 
         let fetched = fetch_signed_commands(&url, branch, "dev-target").unwrap();
         assert_eq!(fetched.len(), 1);

@@ -948,6 +948,7 @@ pub fn run() {
             // changes; the first round also uploads whatever the exit-time
             // commit captured last session.
             core::auto_backup::start(app.handle().clone(), store_for_setup.clone());
+            commands::device_worker::start(store_for_setup.clone());
 
             // One-time (idempotent) security migration: move credentials
             // embedded in the backup remote URL into the OS keychain so no
@@ -1131,6 +1132,14 @@ pub fn run() {
             commands::repository_sources::repository_sources_remove,
             commands::repository_sources::repository_sources_snapshot,
             commands::repository_sources::repository_sources_refresh,
+            commands::device_skill_mirror::device_skill_mirror_list,
+            commands::device_skill_mirror::device_skill_mirror_refresh,
+            commands::device_skill_mirror::device_skill_mirror_read,
+            commands::device_skill_mirror::device_skill_mirror_save,
+            commands::device_skill_mirror::device_skill_publish,
+            commands::device_worker::device_worker_status,
+            commands::device_worker::device_worker_set,
+            commands::device_worker::device_worker_authorize,
             // Devices
             commands::devices::devices_inspect_local,
             commands::devices::devices_get_page,

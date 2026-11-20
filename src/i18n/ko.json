@@ -579,7 +579,7 @@
       "localName": "本机",
       "remoteName": "E470C"
     },
-    "remoteTitle": "라이브러리 · {name} (원격 기기)",
+    "remoteTitle": "라이브러리 · {{name}} (원격 기기)",
     "remoteSubtitle": "이 기기가 보고한 에이전트 스킬 — 읽기 전용",
     "remoteManageLink": "기기 관리 및 배포 요청 보내기 →"
   },
