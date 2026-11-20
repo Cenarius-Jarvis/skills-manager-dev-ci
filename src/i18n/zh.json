@@ -634,7 +634,8 @@
     "stopWorker": "停止自动处理",
     "lastPoll": "上次成功检查 {{time}}",
     "undeployed": "已取消部署（设备已报告）",
-    "updated": "已更新（设备已报告）"
+    "updated": "已更新（设备已报告）",
+    "update": "更新"
   },
   "install": {
     "title": "安装 Skills",

@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2, RefreshCw, Monitor } from "lucide-react";
 import { cn } from "../utils";
@@ -34,6 +35,12 @@ export function RemoteDeviceLibrary({
   const locale = i18n.language;
   const navigate = useNavigate();
   const deviceInstructions = instructions.filter((inst) => inst.device_id === device.id);
+  const waiting = deviceInstructions.some((inst) => inst.state === "pending" || inst.state === "executing");
+  useEffect(() => {
+    if (!waiting || loading) return;
+    const timer = window.setTimeout(onRefresh, 30_000);
+    return () => window.clearTimeout(timer);
+  }, [waiting, loading, onRefresh]);
 
   return (
     <div className="app-page" data-testid="remote-library">
@@ -177,7 +184,7 @@ export function RemoteDeviceLibrary({
               >
                 <StateBadge state={inst.state} action={inst.action} />
                 <span className="text-[13px] font-medium">{inst.skill_name ?? inst.id}</span>
-                <span className="app-badge text-[11px]">{t(`devices.action.${inst.action}`)}</span>
+                <span className="app-badge text-[11px]">{t(inst.action === "apply-repository-edit" ? "remoteWorkspace.update" : `devices.action.${inst.action}`)}</span>
                 {inst.receipt_detail && (
                   <span className="text-[12px] text-muted">{inst.receipt_detail}</span>
                 )}

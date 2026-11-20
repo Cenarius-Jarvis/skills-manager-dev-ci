@@ -7,6 +7,7 @@ import { RemoteDeviceLibrary } from "./RemoteDeviceLibrary";
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key, i18n: { language: "en" } }) }));
 vi.mock("react-router-dom", () => ({ useNavigate: () => vi.fn() }));
 vi.mock("../views/Devices", () => ({ StateBadge: () => null }));
+vi.mock("./RemoteSkillWorkspace", () => ({ RemoteSkillWorkspace: () => null }));
 
 it("shows a fetch failure while keeping the last device report visible", async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);

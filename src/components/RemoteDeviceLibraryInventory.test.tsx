@@ -6,6 +6,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { RemoteDeviceLibrary } from "./RemoteDeviceLibrary";
 import type { DeviceWithStatus } from "../lib/tauri";
 
+vi.mock("./RemoteSkillWorkspace", () => ({ RemoteSkillWorkspace: () => null }));
+
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key, i18n: { language: "en" } }),
 }));

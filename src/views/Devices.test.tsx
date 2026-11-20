@@ -79,6 +79,7 @@ const tauri = vi.hoisted(() => ({
 
 vi.mock("../lib/tauri", () => tauri);
 vi.mock("../components/RepositorySources", () => ({ RepositorySources: () => null }));
+vi.mock("../components/DeviceWorkerSettings", () => ({ DeviceWorkerSettings: () => null }));
 
 let container: HTMLDivElement;
 let root: Root;

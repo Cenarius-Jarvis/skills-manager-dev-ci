@@ -50,6 +50,16 @@ fn run_once(store: &SkillStore, config: &WorkerStatus, report: bool) -> Result<b
     let url = devices::channel_url(store).context("configure the device channel first")?;
     let branch = devices::channel_branch(store);
     let path = cli()?;
+    // Prefer the destination library's own SSH alias for its origin. Other
+    // GitHub repositories may be accessed with the normal GitHub SSH key.
+    let library_route = config.github_ssh.then(|| -> Option<(String, String)> {
+        let repo = git2::Repository::open(central_repo::skills_dir()).ok()?;
+        let remote = repo.find_remote("origin").ok()?;
+        let route = remote.url()?.strip_prefix("git@")?;
+        let origin = format!("git@{route}");
+        let https = crate::core::device_repository_edit::normalized_origin(&origin)?;
+        Some((origin, https))
+    }).flatten();
     let build_command = |action: &str| {
         let mut cmd = std::process::Command::new(&path);
         cmd.args(["--json", "devices", action, "--url", &url, "--branch", &branch])
@@ -63,9 +73,13 @@ fn run_once(store: &SkillStore, config: &WorkerStatus, report: bool) -> Result<b
             cmd.creation_flags(0x08000000);
         }
         if config.github_ssh {
-            cmd.env("GIT_CONFIG_COUNT", "1")
+            cmd.env("GIT_CONFIG_COUNT", if library_route.is_some() { "2" } else { "1" })
                 .env("GIT_CONFIG_KEY_0", "url.git@github.com:.insteadOf")
                 .env("GIT_CONFIG_VALUE_0", "https://github.com/");
+            if let Some((origin, https)) = &library_route {
+                cmd.env("GIT_CONFIG_KEY_1", format!("url.{origin}.insteadOf"))
+                    .env("GIT_CONFIG_VALUE_1", https);
+            }
         }
         cmd
     };

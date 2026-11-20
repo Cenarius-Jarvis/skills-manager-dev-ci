@@ -634,7 +634,8 @@
     "stopWorker": "Stop automatic processing",
     "lastPoll": "Last successful check {{time}}",
     "undeployed": "Undeployed (device reported)",
-    "updated": "Updated (device reported)"
+    "updated": "Updated (device reported)",
+    "update": "Update"
   },
   "install": {
     "title": "Install Skills",

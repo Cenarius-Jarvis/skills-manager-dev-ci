@@ -12,7 +12,7 @@ use super::{
 
 /// A custom SSH alias is accepted only when local SSH configuration resolves
 /// it to GitHub. Its repository path must still match the signed source.
-fn normalized_origin(origin: &str) -> Option<String> {
+pub(crate) fn normalized_origin(origin: &str) -> Option<String> {
     if let Some(url) = devices::github_https_url(origin) {
         return Some(url);
     }
@@ -61,6 +61,13 @@ pub fn apply(store: &SkillStore, payload: &SignedCommandPayload) -> Result<Optio
         .context("published path is not a registered skill in this device library")?;
     let central = directory.canonicalize()?;
     let root_canonical = root.canonicalize()?;
+    if local.workdir().and_then(|dir| dir.canonicalize().ok()).as_deref() != Some(root_canonical.as_path()) {
+        bail!("the configured library is not the root of its Git checkout");
+    }
+    let local_head = local.head()?;
+    if !local_head.is_branch() || local_head.shorthand() != payload.skill_branch.as_deref() {
+        bail!("the published branch does not match the current library branch");
+    }
     if central != root_canonical.join(if subpath == "." { "" } else { subpath }) {
         bail!("published skill path traverses a link");
     }
@@ -89,7 +96,8 @@ pub fn apply(store: &SkillStore, payload: &SignedCommandPayload) -> Result<Optio
         delta.old_file().path() != Some(manifest.as_path()) || delta.new_file().path() != Some(manifest.as_path())) {
         bail!("the published commit changes files outside the selected SKILL.md");
     }
-    let tracked = local.head()?.peel_to_tree()?.get_path(&manifest)?;
+    let local_tree = local_head.peel_to_tree()?;
+    let tracked = local_tree.get_path(&manifest)?;
     if !matches!(tracked.filemode(), 0o100644 | 0o100755) {
         bail!("the destination Git library does not track a regular SKILL.md");
     }
@@ -99,6 +107,7 @@ pub fn apply(store: &SkillStore, payload: &SignedCommandPayload) -> Result<Optio
     }
     let published = std::str::from_utf8(&new)?;
     let permissions = metadata.permissions();
+    let mut newly_linked = false;
     if current != new {
         install_document(&document, &new, permissions.clone())?;
     }
@@ -108,6 +117,7 @@ pub fn apply(store: &SkillStore, payload: &SignedCommandPayload) -> Result<Optio
         let description = skill_metadata::parse_frontmatter(published).description;
         if let Some(path) = selected.as_ref() {
             let actual = sync_engine::sync_skill(&central, path, sync_engine::SyncMode::Symlink, ReplacePolicy::NoClobber)?;
+            newly_linked = true;
             if let Err(err) = store.insert_target(&SkillTargetRecord {
                 id: uuid::Uuid::new_v4().to_string(), skill_id: skill.id.clone(),
                 tool: payload.agent_key.clone(), target_path: path.to_string_lossy().into_owned(),
@@ -115,6 +125,7 @@ pub fn apply(store: &SkillStore, payload: &SignedCommandPayload) -> Result<Optio
                 source_hash: Some(hash.clone()), last_error: None,
             }) {
                 sync_engine::remove_target(path)?;
+                newly_linked = false;
                 return Err(err);
             }
         }
@@ -131,6 +142,14 @@ pub fn apply(store: &SkillStore, payload: &SignedCommandPayload) -> Result<Optio
     })();
     if let Err(err) = result {
         if current != new { install_document(&document, &current, permissions)?; }
+        if newly_linked {
+            if let Some(path) = selected.as_ref() {
+                if path.canonicalize().ok().as_deref() == Some(central.as_path()) {
+                    sync_engine::remove_target(path)?;
+                    store.delete_target(&skill.id, &payload.agent_key)?;
+                }
+            }
+        }
         return Err(err);
     }
     Ok(Some(selected.or(existing).context("target deployment missing")?))

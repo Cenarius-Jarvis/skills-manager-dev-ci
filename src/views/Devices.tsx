@@ -742,7 +742,7 @@ export function Devices() {
                           {inst.skill_name ?? inst.id}
                         </span>
                         <span className="app-badge text-[11px]">
-                          {t(`devices.action.${inst.action}`)}
+                          {t(inst.action === "apply-repository-edit" ? "remoteWorkspace.update" : `devices.action.${inst.action}`)}
                         </span>
                         <span className="text-[12px] text-muted">{deviceName(inst.device_id)}</span>
                         <span className="text-[12px] text-muted">{inst.agent_key}</span>
