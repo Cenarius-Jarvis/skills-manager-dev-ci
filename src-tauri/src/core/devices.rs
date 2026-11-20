@@ -49,6 +49,7 @@ pub const TASK_STATE_PENDING: &str = "pending";
 pub const TASK_STATE_EXECUTING: &str = "executing";
 pub const TASK_STATE_SUCCESS: &str = "success";
 pub const TASK_STATE_FAILED: &str = "failed";
+pub const TASK_STATE_UNKNOWN: &str = "unknown";
 pub const TASK_STATE_DEVICE_OFFLINE: &str = "device_offline";
 pub const TASK_STATE_STALE: &str = "stale";
 pub const TASK_STATE_EXPIRED: &str = "expired";
@@ -1133,9 +1134,11 @@ fn import_library_observation(store: &SkillStore, device_id: &str, observation: 
 #[derive(Debug, Default)]
 pub struct ChannelSnapshot {
     pub head_commit: String,
+    pub(crate) scope: String,
     pub manifests: Vec<DeviceManifest>,
     pub states: Vec<DeviceStateReport>,
     pub signed_states: Vec<(String, super::signed_channel::SignedChannelMessage)>,
+    pub(crate) signed_receipts: Vec<(String, super::signed_channel::SignedChannelMessage)>,
     pub libraries: Vec<(String, LibraryObservation)>,
     pub instructions: Vec<(DeviceInstruction, String)>,
     pub receipts: Vec<(DeviceReceipt, String)>,
@@ -1165,6 +1168,50 @@ fn parse_json_file<T: for<'de> Deserialize<'de>>(
             warnings.push(format!("{}: invalid ({err})", path.display()));
             None
         }
+    }
+}
+
+fn read_signed_receipts(device_dir: &Path, device_id: &str, snapshot: &mut ChannelSnapshot) {
+    use super::{device_envelope, signed_channel};
+    const MAX_RECEIPTS: usize = 1024;
+    const MAX_RECEIPT_BYTES: u64 = 64 * 1024;
+    let entries = match std::fs::read_dir(device_dir.join("signed-receipts")) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+        Err(_) => {
+            snapshot.warnings.push(format!("devices/{device_id}: signed receipts unavailable"));
+            return;
+        }
+    };
+    let mut invalid = false;
+    for (index, entry) in entries.enumerate() {
+        if index >= MAX_RECEIPTS || snapshot.signed_receipts.len() >= MAX_RECEIPTS {
+            snapshot.warnings.push("signed receipt limit reached; refresh may be incomplete".into());
+            break;
+        }
+        let message = (|| -> Result<_> {
+            let entry = entry?;
+            let path = entry.path();
+            let meta = std::fs::symlink_metadata(&path)?;
+            if !meta.is_file() || channel_path_is_link(&meta) || meta.len() > MAX_RECEIPT_BYTES {
+                bail!("invalid receipt file");
+            }
+            let message = signed_channel::decode_channel_file(
+                &std::fs::read(&path)?, device_envelope::MessageKind::Receipt,
+            )?;
+            let expected_name = format!("{}.json", message.envelope.message_id);
+            if entry.file_name() != std::ffi::OsStr::new(&expected_name) {
+                bail!("receipt filename mismatch");
+            }
+            Ok(message)
+        })();
+        match message {
+            Ok(message) => snapshot.signed_receipts.push((device_id.to_string(), message)),
+            Err(_) => invalid = true,
+        }
+    }
+    if invalid {
+        snapshot.warnings.push(format!("devices/{device_id}: invalid signed receipt file"));
     }
 }
 
@@ -1206,6 +1253,7 @@ pub fn fetch_channel_snapshot(url: &str, branch: &str) -> Result<ChannelSnapshot
         .to_string();
     let mut snapshot = ChannelSnapshot {
         head_commit: head_commit.clone(),
+        scope: super::device_receipts::channel_scope(url, branch),
         ..Default::default()
     };
 
@@ -1249,6 +1297,7 @@ pub fn fetch_channel_snapshot(url: &str, branch: &str) -> Result<ChannelSnapshot
             snapshot.warnings.push(format!("devices/{device_id}/library-v1.json: unavailable or incomplete"));
         }
         snapshot.libraries.push((device_id.clone(), library));
+        read_signed_receipts(&device_dir, &device_id, &mut snapshot);
 
         let signed_path = device_dir.join("state-signed-v1.json");
         match std::fs::symlink_metadata(&signed_path) {
@@ -1356,7 +1405,6 @@ pub fn fetch_channel_snapshot(url: &str, branch: &str) -> Result<ChannelSnapshot
 pub struct ImportSummary {
     pub devices: usize,
     pub states: usize,
-    pub instructions: usize,
     pub receipts: usize,
     pub warnings: Vec<String>,
 }
@@ -1481,73 +1529,23 @@ pub fn import_snapshot(store: &SkillStore, snapshot: &ChannelSnapshot) -> Result
         }
     }
 
-    for (inst, commit) in &snapshot.instructions {
-        let row = DeviceInstructionRow {
-            id: inst.id.clone(),
-            device_id: inst.device_id.clone(),
-            action: inst.action.clone(),
-            skill_url: inst.skill_url.clone(),
-            skill_branch: inst.skill_branch.clone(),
-            skill_subpath: inst.skill_subpath.clone(),
-            skill_name: inst.skill_name.clone(),
-            agent_key: inst.agent_key.clone(),
-            created_at: inst.created_at,
-            expires_at: inst.expires_at,
-            created_by: inst.created_by.clone(),
-            instruction_commit: Some(commit.clone()),
-            receipt_commit: None,
-            state: TASK_STATE_PENDING.to_string(),
-            receipt_status: None,
-            receipt_reason: None,
-            receipt_detail: None,
-            receipt_at: None,
-            executor_version: None,
-        };
-        store.upsert_device_instruction(&row)?;
-        summary.instructions += 1;
+    if !snapshot.instructions.is_empty() || !snapshot.receipts.is_empty() {
+        summary.warnings.push("unsigned deployment requests or receipts ignored".into());
     }
-
-    for (receipt, _commit) in &snapshot.receipts {
-        if let Some(existing) = store.get_device_instruction(&receipt.instruction_id)? {
-            let inst = DeviceInstruction {
-                schema: DEVICE_PROTOCOL_VERSION,
-                id: existing.id.clone(),
-                device_id: existing.device_id.clone(),
-                action: existing.action.clone(),
-                skill_url: existing.skill_url.clone(),
-                skill_branch: existing.skill_branch.clone(),
-                skill_subpath: existing.skill_subpath.clone(),
-                skill_name: existing.skill_name.clone(),
-                agent_key: existing.agent_key.clone(),
-                created_at: existing.created_at,
-                expires_at: existing.expires_at,
-                created_by: existing.created_by.clone(),
-            };
-            if let Err(err) = validate_receipt_against(receipt, &inst) {
-                summary
-                    .warnings
-                    .push(format!("receipt {}: refused ({err})", receipt.instruction_id));
-                continue;
-            }
-            store.set_device_instruction_receipt(
-                &receipt.instruction_id,
-                &receipt.status,
-                receipt.reason.as_deref(),
-                receipt.detail.as_deref(),
-                receipt.instruction_commit.as_deref(),
-                receipt.finished_at,
-                receipt.executor_version.as_deref(),
-            )?;
-            summary.receipts += 1;
+    let mut receipts: Vec<_> = snapshot.signed_receipts.iter().collect();
+    receipts.sort_by(|(_, a), (_, b)| {
+        (a.envelope.issued_at, &a.envelope.message_id)
+            .cmp(&(b.envelope.issued_at, &b.envelope.message_id))
+    });
+    for (device_id, receipt) in receipts {
+        match super::device_receipts::import(store, &snapshot.scope, device_id, receipt, now) {
+            Ok(true) => summary.receipts += 1,
+            Ok(false) => {}
+            Err(_) => summary.warnings.push(format!("devices/{device_id}: signed receipt could not be verified or applied")),
         }
     }
 
-    // Recompute the projection for every instruction: cheap (a handful of
-    // rows) and immune to ordering effects between receipts and states.
     let threshold = online_threshold_secs(store);
-    // Legacy unsigned state must not affect instruction state either. The
-    // signed state protocol does not currently claim an executing operation.
-    let executing_by_device: HashMap<String, Vec<String>> = HashMap::new();
     let devices = store.get_devices()?;
     let mut last_seen_by_id: HashMap<String, Option<i64>> = HashMap::new();
     for d in &devices {
@@ -1555,26 +1553,19 @@ pub fn import_snapshot(store: &SkillStore, snapshot: &ChannelSnapshot) -> Result
         last_seen_by_id.insert(d.id.clone(), seen);
     }
 
-    for row in store.get_device_instructions(None)? {
-        let executing = executing_by_device
-            .get(&row.device_id)
-            .map(|ids| ids.contains(&row.id))
-            .unwrap_or(false);
-        let receipt = row.receipt_status.as_deref().map(|status| ReceiptView {
-            status,
-            instruction_commit: row.receipt_commit.as_deref(),
-        });
+    for row in super::device_receipts::published_requests(store)? {
+        if row.receipt_status.is_some() { continue; }
         let state = derive_task_state(
             row.expires_at,
             row.instruction_commit.as_deref(),
-            receipt,
-            executing,
+            None,
+            false,
             last_seen_by_id.get(&row.device_id).copied().flatten(),
             threshold,
             now,
         );
         if state != row.state {
-            store.set_device_instruction_state(&row.id, state)?;
+            store.set_pending_device_instruction_state(&row.id, state)?;
         }
     }
 
@@ -2113,7 +2104,7 @@ mod tests {
         assert_eq!(summary.devices, 1);
         assert_eq!(summary.states, 0);
         assert!(summary.warnings.iter().any(|w| w.contains("unsigned device state")));
-        assert_eq!(summary.instructions, 1);
+        assert!(summary.warnings.iter().any(|w| w.contains("unsigned deployment")));
 
         let devices = store.get_devices().unwrap();
         assert_eq!(devices.len(), 1);
@@ -2124,15 +2115,7 @@ mod tests {
         let records = store.get_device_skill_records(Some("dev-test")).unwrap();
         assert!(records.is_empty());
 
-        // No receipt, TTL (2_000) long past the import-time clock: the
-        // projection must say expired, never pending or success.
-        let rows = store.get_device_instructions(None).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].state, TASK_STATE_EXPIRED);
-        assert_eq!(rows[0].instruction_commit.as_deref(), Some("c0ffee"));
-
-        // A receipt for the matching commit flips the state to failed;
-        // a receipt for another device must be refused with a warning.
+        // Legacy receipts cannot establish a deployment result.
         let matching = DeviceReceipt {
             schema: DEVICE_PROTOCOL_VERSION,
             instruction_id: inst.id.clone(),
@@ -2146,31 +2129,8 @@ mod tests {
         };
         snapshot.receipts.push((matching, "c0ffee".to_string()));
         let summary = import_snapshot(&store, &snapshot).unwrap();
-        assert_eq!(summary.receipts, 1);
-        let rows = store.get_device_instructions(None).unwrap();
-        assert_eq!(rows[0].state, TASK_STATE_FAILED);
-        assert_eq!(rows[0].receipt_reason.as_deref(), Some("conflict"));
-
-        snapshot.receipts.clear();
-        snapshot.receipts.push((
-            DeviceReceipt {
-                schema: DEVICE_PROTOCOL_VERSION,
-                instruction_id: inst.id.clone(),
-                device_id: "dev-impersonator".to_string(),
-                status: RECEIPT_STATUS_SUCCESS.to_string(),
-                instruction_commit: Some("c0ffee".to_string()),
-                reason: None,
-                detail: None,
-                executor_version: None,
-                finished_at: 7_000,
-            },
-            "c0ffee".to_string(),
-        ));
-        let summary = import_snapshot(&store, &snapshot).unwrap();
         assert_eq!(summary.receipts, 0);
-        assert!(summary.warnings.iter().any(|w| w.contains("refused")));
-        let rows = store.get_device_instructions(None).unwrap();
-        assert_eq!(rows[0].state, TASK_STATE_FAILED, "impersonated receipt must not flip state");
+        assert!(store.get_device_instructions(None).unwrap().is_empty());
     }
     fn fixture_library(device_id: &str, timestamp: i64, names: &[&str]) -> LibraryReport {
         LibraryReport {

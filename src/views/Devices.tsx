@@ -19,7 +19,7 @@ import { RepositorySources } from "../components/RepositorySources";
 import * as api from "../lib/tauri";
 import type { DeviceTaskState, DeviceWithStatus } from "../lib/tauri";
 
-/** Visual + label mapping for the seven task states (docs/devices.md).
+/** Visual + label mapping for the task states (docs/devices.md).
  * "success" is always backed by the device's own receipt — never by the
  * mere existence of an instruction or a commit. */
 function stateMeta(
@@ -55,9 +55,10 @@ function stateMeta(
         className: "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400",
         icon: WifiOff,
       };
+    case "unknown":
     case "stale":
       return {
-        label: t("devices.state.stale"),
+        label: t(`devices.state.${state}`),
         className: "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400",
         icon: AlertTriangle,
       };

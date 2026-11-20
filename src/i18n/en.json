@@ -266,6 +266,7 @@
       "executing": "Executing",
       "success": "Deployed (reported)",
       "failed": "Failed",
+      "unknown": "Outcome unknown",
       "device_offline": "Device offline",
       "stale": "Stale",
       "expired": "Expired"

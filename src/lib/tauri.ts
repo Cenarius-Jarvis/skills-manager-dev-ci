@@ -920,6 +920,7 @@ export type DeviceTaskState =
   | "executing"
   | "success"
   | "failed"
+  | "unknown"
   | "device_offline"
   | "stale"
   | "expired";

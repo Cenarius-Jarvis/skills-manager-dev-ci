@@ -1811,32 +1811,10 @@ impl SkillStore {
         Ok(rows)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn set_device_instruction_receipt(
-        &self,
-        id: &str,
-        status: &str,
-        reason: Option<&str>,
-        detail: Option<&str>,
-        receipt_commit: Option<&str>,
-        receipt_at: i64,
-        executor_version: Option<&str>,
-    ) -> Result<()> {
+    pub fn set_pending_device_instruction_state(&self, id: &str, state: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "UPDATE device_instructions SET
-                receipt_status = ?2, receipt_reason = ?3, receipt_detail = ?4,
-                receipt_commit = ?5, receipt_at = ?6, executor_version = ?7
-             WHERE id = ?1",
-            params![id, status, reason, detail, receipt_commit, receipt_at, executor_version],
-        )?;
-        Ok(())
-    }
-
-    pub fn set_device_instruction_state(&self, id: &str, state: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "UPDATE device_instructions SET state = ?2 WHERE id = ?1",
+            "UPDATE device_instructions SET state = ?2 WHERE id = ?1 AND receipt_status IS NULL",
             params![id, state],
         )?;
         Ok(())

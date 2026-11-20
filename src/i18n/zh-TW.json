@@ -266,6 +266,7 @@
       "executing": "執行中",
       "success": "已部署（裝置已回報）",
       "failed": "失敗",
+      "unknown": "結果未知",
       "device_offline": "裝置離線",
       "stale": "狀態過期",
       "expired": "已逾時"

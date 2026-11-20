@@ -118,9 +118,7 @@ fn build_page(store: &SkillStore) -> Result<DevicesPage, AppError> {
             library,
         });
     }
-    let instructions = store
-        .get_device_instructions(None)
-        .map_err(|e| AppError::db(e))?;
+    let instructions = crate::core::device_receipts::published_requests(store).map_err(AppError::db)?;
     Ok(DevicesPage {
         channel: channel_config_status(store)?,
         devices: devices_out,
@@ -487,8 +485,8 @@ fn create_signed_instruction_internal(
     )
     .map_err(input_err)?;
 
-    // Record locally first so a failed push leaves an auditable pending
-    // instruction instead of a silently dropped one.
+    // Record locally first. The request becomes eligible for receipt
+    // projection only after the channel confirms the publication.
     let mut row = DeviceInstructionRow {
         id: message.envelope.message_id.clone(),
         device_id: device_id.to_string(),
@@ -515,8 +513,9 @@ fn create_signed_instruction_internal(
         signed_channel::publish_signed_command(store, &url, &branch, device_id, &message)
     })
     .map_err(git_err)?;
+    crate::core::device_receipts::remember_publication(store, &row.id, &url, &branch, &commit)
+        .map_err(AppError::db)?;
     row.instruction_commit = Some(commit.clone());
-    store.upsert_device_instruction(&row).map_err(AppError::db)?;
     store.log_audit(
         AuditDraft::new("device.instruction.signed_publish")
             .ok()
@@ -736,8 +735,8 @@ mod snapshot_warning_tests {
         let page = page_from_snapshot(&store, &snapshot).unwrap();
         let warnings = page.snapshot_warnings.unwrap();
         assert!(warnings.iter().any(|w| w.contains("fixtures/state.json")));
-        assert!(warnings.iter().any(|w| w.contains("receipt inst-fixture: refused")));
-        assert_ne!(page.instructions[0].state, "success");
+        assert!(warnings.iter().any(|w| w.contains("unsigned deployment")));
+        assert!(page.instructions.is_empty());
 
         let clean = page_from_snapshot(&store, &ChannelSnapshot::default()).unwrap();
         assert_eq!(clean.snapshot_warnings, Some(Vec::new()));

@@ -1,9 +1,12 @@
-name: Device state directory validation
+name: Device state and signed receipts
 on:
   push:
     branches: [codex/signed-device-status]
     paths:
       - 'src-tauri/**'
+      - 'src/views/Devices.tsx'
+      - 'src/lib/tauri.ts'
+      - 'src/i18n/**'
       - '.github/workflows/device-state-directory-check.yml'
   workflow_dispatch:
 permissions:
@@ -41,3 +44,18 @@ jobs:
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib device_executor -- --test-threads=1
       - name: Test device page projection
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib device_page_ -- --test-threads=1
+      - name: Test signed receipt projection across a Git channel
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib device_receipts::tests -- --test-threads=1
+  frontend:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx vitest run src/views/Devices.test.tsx
+      - run: npm run build
+      - run: node scripts/check-i18n.mjs

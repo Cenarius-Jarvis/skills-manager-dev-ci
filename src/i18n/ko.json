@@ -266,6 +266,7 @@
       "executing": "실행 중",
       "success": "배포됨(기기 보고)",
       "failed": "실패",
+      "unknown": "결과 알 수 없음",
       "device_offline": "기기 오프라인",
       "stale": "상태 만료",
       "expired": "시간 초과"

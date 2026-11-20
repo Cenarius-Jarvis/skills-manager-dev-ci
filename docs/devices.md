@@ -27,6 +27,14 @@ persistent connection between them.
 
 ## Architecture
 
+The signed deployment path stores requests under `signed-commands/` and
+device results under `signed-receipts/`. The manager displays requests it
+successfully published from this installation to the selected channel. It
+accepts a result only after checking the paired device key and the original
+request ID. A repeated receipt leaves the stored result unchanged. A device
+that cannot establish the outcome reports it as unknown. Unsigned deployment
+history is excluded from the device page.
+
 Three cooperating parts, all already present in the codebase in some form:
 
 1. **Control channel** — a dedicated Git remote + branch (independent from

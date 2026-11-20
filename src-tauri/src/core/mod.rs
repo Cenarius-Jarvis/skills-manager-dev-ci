@@ -9,6 +9,7 @@ pub mod device_executor;
 pub mod device_envelope;
 pub mod device_identity;
 pub mod device_pairing;
+pub mod device_receipts;
 #[cfg(test)]
 mod native_managed_executor;
 #[cfg(test)]

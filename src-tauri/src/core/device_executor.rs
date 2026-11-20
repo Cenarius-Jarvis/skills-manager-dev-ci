@@ -1704,12 +1704,10 @@ mod tests {
             "foreign directory must survive"
         );
 
-        // Manager side: refresh sees the rejection, then clears the conflict
-        // and re-runs, which now succeeds and reports success.
+        // Legacy fixture results still reach Git, but the manager ignores them.
         let snapshot = devices::fetch_channel_snapshot(&channel_url, "devices-test").unwrap();
-        devices::import_snapshot(&store, &snapshot).unwrap();
-        let rows = store.get_device_instructions(None).unwrap();
-        assert_eq!(rows[0].state, devices::TASK_STATE_FAILED);
+        assert_eq!(snapshot.receipts[0].0.status, "rejected");
+        assert_eq!(devices::import_snapshot(&store, &snapshot).unwrap().receipts, 0);
 
         std::fs::remove_dir_all(&foreign).unwrap();
         let report = run_once_unsigned_fixture(&config).unwrap();
@@ -1717,15 +1715,14 @@ mod tests {
         assert!(agent_root.join("pilot-skill").join("SKILL.md").is_file());
 
         let snapshot = devices::fetch_channel_snapshot(&channel_url, "devices-test").unwrap();
-        devices::import_snapshot(&store, &snapshot).unwrap();
-        let rows = store.get_device_instructions(None).unwrap();
-        assert_eq!(rows[0].state, devices::TASK_STATE_SUCCESS);
-        assert_eq!(rows[0].receipt_status.as_deref(), Some("success"));
+        assert_eq!(snapshot.receipts[0].0.status, "success");
         assert_eq!(
-            rows[0].receipt_commit.as_deref(),
-            rows[0].instruction_commit.as_deref(),
+            snapshot.receipts[0].0.instruction_commit.as_deref(),
+            Some(snapshot.instructions[0].1.as_str()),
             "receipt must match the instruction commit"
         );
+        assert_eq!(devices::import_snapshot(&store, &snapshot).unwrap().receipts, 0);
+        assert!(store.get_device_instructions(None).unwrap().is_empty());
         // Legacy unsigned fixture state does not establish device presence.
         assert!(store.get_device("dev-e2e").unwrap().unwrap().last_seen_at.is_none());
 

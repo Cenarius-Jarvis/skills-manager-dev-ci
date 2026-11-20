@@ -266,6 +266,7 @@
       "executing": "Ejecutando",
       "success": "Desplegada (informada)",
       "failed": "Fallida",
+      "unknown": "Resultado desconocido",
       "device_offline": "Dispositivo sin conexión",
       "stale": "Obsoleta",
       "expired": "Caducada"
