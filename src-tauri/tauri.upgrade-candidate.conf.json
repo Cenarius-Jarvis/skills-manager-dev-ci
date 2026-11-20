@@ -1,0 +1,11 @@
+{
+  "bundle": {
+    "createUpdaterArtifacts": false,
+    "externalBin": ["target/release/skills-manager-cli"]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": []
+    }
+  }
+}

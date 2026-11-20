@@ -1,0 +1,111 @@
+name: Build device management upgrade candidate
+
+# This candidate opens the normal data directory. Publish only CI artifacts.
+on:
+  push:
+    branches: [codex/signed-device-status]
+    paths:
+      - '.github/workflows/upgrade-candidate.yml'
+      - 'src-tauri/tauri.upgrade-candidate.conf.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: windows-x64
+            suffix: .exe
+            bundles: nsis
+            artifacts: src-tauri/target/release/bundle/nsis/*.exe
+          - os: ubuntu-22.04
+            label: linux-x64
+            suffix: ''
+            bundles: deb appimage
+            artifacts: |
+              src-tauri/target/release/bundle/deb/*.deb
+              src-tauri/target/release/bundle/appimage/*.AppImage
+              skills-manager-cli-linux-x64.tar.gz
+    name: Candidate (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: src-tauri
+
+      - name: Install Linux runner dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-user-dirs xdg-utils
+
+      - name: Build and stage the matching CLI
+        shell: bash
+        env:
+          CLI_SUFFIX: ${{ matrix.suffix }}
+        run: |
+          cargo build --locked --release --manifest-path src-tauri/Cargo.toml --bin skills-manager-cli
+          cli="src-tauri/target/release/skills-manager-cli"
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          test "$("$cli$CLI_SUFFIX" --version | tr -d '\r')" = "skills-manager-cli $version"
+          cp "$cli$CLI_SUFFIX" "$cli-$(rustc --print host-tuple)$CLI_SUFFIX"
+
+      - name: Build desktop packages
+        shell: bash
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+          NO_STRIP: 'true'
+        run: |
+          npm ci
+          npm run tauri:build -- --config src-tauri/tauri.upgrade-candidate.conf.json --bundles ${{ matrix.bundles }}
+
+      - name: Verify the installed Windows CLI in the runner
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem -Path src-tauri/target/release/bundle/nsis/*.exe -File)
+          if ($installers.Count -ne 1) { throw "Expected one NSIS installer, found $($installers.Count)" }
+          $installDir = Join-Path $env:RUNNER_TEMP 'skills-manager-candidate'
+          $setup = Start-Process -FilePath $installers[0].FullName -ArgumentList "/S /D=$installDir" -WindowStyle Hidden -Wait -PassThru
+          if ($setup.ExitCode -ne 0) { throw "NSIS installer exited with $($setup.ExitCode)" }
+          $version = (Get-Content -Raw src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          $cli = Join-Path $installDir 'skills-manager-cli.exe'
+          $actual = & $cli --version
+          if ($LASTEXITCODE -ne 0 -or $actual -ne "skills-manager-cli $version") { throw "Unexpected installed CLI version: $actual" }
+
+      - name: Verify the Linux packages and archive the standalone CLI
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          debs=(src-tauri/target/release/bundle/deb/*.deb)
+          images=(src-tauri/target/release/bundle/appimage/*.AppImage)
+          test "${#debs[@]}" = 1
+          test "${#images[@]}" = 1
+          dpkg-deb -x "${debs[0]}" "$RUNNER_TEMP/deb"
+          packaged_cli="$RUNNER_TEMP/deb/usr/bin/skills-manager-cli"
+          test "$("$packaged_cli" --version)" = "skills-manager-cli $version"
+          image=$(realpath "${images[0]}")
+          (cd "$RUNNER_TEMP" && "$image" --appimage-extract 'usr/bin/skills-manager-cli' >/dev/null)
+          test -x "$RUNNER_TEMP/squashfs-root/usr/bin/skills-manager-cli"
+          tar -czf skills-manager-cli-linux-x64.tar.gz -C src-tauri/target/release skills-manager-cli
+
+      - name: Upload candidate packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: skills-manager-upgrade-candidate-${{ matrix.label }}-${{ github.sha }}
+          path: ${{ matrix.artifacts }}
+          if-no-files-found: error
+          retention-days: 14
