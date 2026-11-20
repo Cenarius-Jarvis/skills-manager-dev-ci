@@ -536,6 +536,126 @@ mod tests {
     use super::*;
 
     #[test]
+    fn upgrade_v10_retains_preset_skills_and_agent_deployments() {
+        use crate::core::{
+            app_state, central_repo, content_hash, crypto, sync_metadata,
+            skill_store::SkillStore,
+            sync_engine::{self, ReplacePolicy, SyncMode},
+            tool_adapters::{self, CustomToolDef, ToolCategory},
+        };
+        use rusqlite::params;
+        use std::fs;
+
+        let _lock = central_repo::test_base_dir_lock();
+        let fixture = tempfile::tempdir().unwrap();
+        let base = fixture.path().join("library");
+        central_repo::set_test_base_dir_override(Some(base.clone()));
+        central_repo::set_test_config_path_override(Some(fixture.path().join("repo-path.json")));
+        struct ResetPaths;
+        impl Drop for ResetPaths {
+            fn drop(&mut self) {
+                central_repo::set_test_base_dir_override(None);
+                central_repo::set_test_config_path_override(None);
+            }
+        }
+        let _reset = ResetPaths;
+        let agent = fixture.path().join("agent");
+        let disabled_agent = fixture.path().join("disabled-agent");
+        fs::create_dir_all(&agent).unwrap();
+        fs::create_dir_all(&disabled_agent).unwrap();
+        let content = "---\nname: preset-skill\ndescription: Isolated migration fixture\n---\n";
+        let source = base.join("skills").join("preset-skill");
+        let library_only = base.join("skills").join("library-only");
+        for (path, text) in [(&source, content.to_string()), (&library_only, content.replace("preset-skill", "library-only"))] {
+            fs::create_dir_all(path).unwrap();
+            fs::write(path.join("SKILL.md"), text).unwrap();
+        }
+        let deployed = agent.join("preset-skill");
+        let existing_mode = sync_engine::sync_skill(&source, &deployed, SyncMode::Symlink, ReplacePolicy::NoClobber).unwrap();
+        let hash = content_hash::hash_directory(&source).unwrap();
+
+        let db_path = base.join("skills-manager.db");
+        let conn = Connection::open(&db_path).unwrap();
+        for version in 0..10 {
+            migrate_step(&conn, version).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 10).unwrap();
+        for (id, path) in [("preset-skill", &source), ("library-only", &library_only)] {
+            conn.execute(
+                "INSERT INTO skills (id,name,source_type,central_path,enabled,created_at,updated_at)
+                 VALUES (?1,?1,'local',?2,1,1,1)",
+                params![id, path.to_string_lossy().as_ref()],
+            ).unwrap();
+        }
+        conn.execute("UPDATE skills SET content_hash=?1 WHERE id='preset-skill'", params![&hash]).unwrap();
+        conn.execute_batch(
+            "INSERT INTO scenarios(id,name,sort_order,created_at,updated_at) VALUES('work','Office fixture',0,1,1);
+             INSERT INTO active_scenario(key,scenario_id) VALUES('current','work');
+             INSERT INTO scenario_skills(scenario_id,skill_id,added_at,sort_order) VALUES('work','preset-skill',1,0);
+             INSERT INTO scenario_skill_tools(scenario_id,skill_id,tool,enabled,updated_at) VALUES
+               ('work','preset-skill','fixture-agent',1,1),('work','preset-skill','fixture-disabled',0,1);",
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO skill_targets (id,skill_id,tool,target_path,mode,status,synced_at,source_hash)
+             VALUES ('target','preset-skill','fixture-agent',?1,?2,'ok',1,?3)",
+            params![deployed.to_string_lossy().as_ref(), existing_mode.as_str(), &hash],
+        ).unwrap();
+        let custom = [("fixture-agent", &agent), ("fixture-disabled", &disabled_agent)]
+            .into_iter().map(|(key, path)| CustomToolDef {
+                key: key.into(), display_name: key.into(),
+                skills_dir: path.to_string_lossy().into_owned(),
+                project_relative_skills_dir: None, category: ToolCategory::Coding,
+            }).collect::<Vec<_>>();
+        let mut disabled = tool_adapters::default_tool_adapters().into_iter()
+            .map(|adapter| adapter.key).collect::<Vec<_>>();
+        disabled.push("fixture-disabled".into());
+        for (key, value) in [
+            ("custom_tools", serde_json::to_string(&custom).unwrap()),
+            ("disabled_tools", serde_json::to_string(&disabled).unwrap()),
+            ("sync_mode", existing_mode.as_str().into()),
+        ] {
+            conn.execute("INSERT OR REPLACE INTO settings(key,value) VALUES (?1,?2)", params![key,value]).unwrap();
+        }
+        drop(conn);
+        crypto::load_or_create_key(&base.join(".secret.key")).unwrap();
+        let old = SkillStore::open_existing_no_migrate(&db_path).unwrap();
+        sync_metadata::write_all_from_db_unlocked(&old).unwrap();
+        drop(old);
+
+        let foreign = agent.join("user-skill");
+        fs::create_dir_all(&foreign).unwrap();
+        fs::write(foreign.join("SKILL.md"), b"user-managed content").unwrap();
+
+        // Match desktop startup, including the real migration, metadata
+        // reindex and restoration of the user's active preset.
+        let (store, timings) = app_state::initialize_store().unwrap();
+        assert_eq!(timings.apply_scenario_kind, "default_startup");
+        let version: u32 = store.with_conn(|conn| {
+            Ok(conn.pragma_query_value(None, "user_version", |row| row.get(0))?)
+        }).unwrap();
+        assert_eq!(version, LATEST_VERSION);
+        assert_eq!(store.get_all_skills().unwrap().len(), 2);
+        assert!(store.get_skill_by_id("library-only").unwrap().is_some());
+        assert_eq!(store.get_active_scenario_id().unwrap().as_deref(), Some("work"));
+        assert_eq!(store.get_all_scenarios().unwrap()[0].name, "Office fixture");
+        assert_eq!(store.get_skill_ids_for_scenario("work").unwrap(), ["preset-skill"]);
+        let flags = store.get_scenario_skill_tool_toggles("work", "preset-skill").unwrap();
+        assert!(flags.iter().any(|row| row.tool == "fixture-agent" && row.enabled));
+        assert!(flags.iter().any(|row| row.tool == "fixture-disabled" && !row.enabled));
+        assert_eq!(tool_adapters::find_adapter_with_store(&store, "fixture-agent").unwrap().skills_dir(), agent);
+        assert_eq!(store.get_setting("disabled_tools").unwrap(), Some(serde_json::to_string(&disabled).unwrap()));
+        let targets = store.get_all_targets().unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].tool, "fixture-agent");
+        assert_eq!(std::path::PathBuf::from(&targets[0].target_path), deployed);
+        assert_eq!(targets[0].mode, existing_mode.as_str());
+        assert_eq!(fs::read_to_string(deployed.join("SKILL.md")).unwrap(), content);
+        assert_eq!(fs::read(foreign.join("SKILL.md")).unwrap(), b"user-managed content");
+        assert!(!agent.join("library-only").exists());
+        assert!(!disabled_agent.join("preset-skill").exists());
+    }
+
+    #[test]
     fn test_fresh_database_migrates_to_latest() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
