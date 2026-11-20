@@ -1,4 +1,4 @@
-name: Test builds label 11 (signed device state)
+name: Test builds label 12 (signed deployment receipts)
 # Deliberately narrow trigger, same scheme as two-device-simulation.yml:
 # only pushes to this branch that touch this workflow file build, so a
 # release is an explicit act — bump the build label below to cut a new
